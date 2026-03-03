@@ -42,10 +42,10 @@ function buildLayout(targetDir, commands) {
   const rightBottomSize = rightBottomIsTerminal ? '30%' : '50%';
   const rightTop = paneKdl(targetDir, commands.rightTop, `${project}:agent`, rightTopSize);
   if (!commands.rightBottom) {
-    return `layout {\n  pane split_direction="Vertical" {\n    pane size="40%" split_direction="Horizontal" {\n      ${leftTop}\n      ${leftBottom}\n    }\n    pane size="60%" {\n      ${rightTop}\n    }\n  }\n}\n`;
+    return `layout {\n  pane split_direction="Vertical" {\n    pane size="45%" split_direction="Horizontal" {\n      ${leftTop}\n      ${leftBottom}\n    }\n    pane size="55%" {\n      ${rightTop}\n    }\n  }\n}\n`;
   }
   const rightBottom = paneKdl(targetDir, commands.rightBottom, `${project}:${rightBottomIsTerminal ? 'terminal' : 'agent'}`, rightBottomSize);
-  return `layout {\n  pane split_direction="Vertical" {\n    pane size="40%" split_direction="Horizontal" {\n      ${leftTop}\n      ${leftBottom}\n    }\n    pane size="60%" split_direction="Horizontal" {\n      ${rightTop}\n      ${rightBottom}\n    }\n  }\n}\n`;
+  return `layout {\n  pane split_direction="Vertical" {\n    pane size="45%" split_direction="Horizontal" {\n      ${leftTop}\n      ${leftBottom}\n    }\n    pane size="55%" split_direction="Horizontal" {\n      ${rightTop}\n      ${rightBottom}\n    }\n  }\n}\n`;
 }
 
 function writeLayout(targetDir, commands) {

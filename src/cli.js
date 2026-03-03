@@ -201,11 +201,11 @@ prepend_keymap = [
 
   const zellijLayout = `layout {
   pane split_direction="Vertical" {
-    pane size="40%" split_direction="Horizontal" {
+    pane size="45%" split_direction="Horizontal" {
       pane
       pane
     }
-    pane size="60%" split_direction="Horizontal" {
+    pane size="55%" split_direction="Horizontal" {
       pane size="70%"
       pane size="30%"
     }
