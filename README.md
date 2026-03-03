@@ -36,9 +36,15 @@ npx zvibe-kits setup
 ### 初始化建议
 
 ```bash
-zvibe setup --yes
+zvibe setup
 zvibe status --doctor
 ```
+
+### setup 一条龙行为
+
+- `zvibe setup`：自动检测并安装缺失依赖，然后进入 Agent 交互配置；同时覆盖插件配置模板
+- `zvibe setup --no-repair`：自动检测并安装缺失依赖，然后进入 Agent 交互配置；不覆盖已存在插件配置
+- `zvibe setup --repair`：强制修复（覆盖）插件配置模板
 
 ## 使用方法
 
@@ -59,6 +65,7 @@ zvibe [codex|claude|opencode|code] <dir>
 - `--backend zellij`：强制使用 zellij 后端
 - `--backend auto`：优先 Ghostty，不可用时降级 zellij
 - `-t, --terminal`：单 Agent 模式下在右侧增加 Terminal
+- `--no-repair`：`setup` 时不覆盖已有插件配置
 - `--json`：JSON 结构化输出
 - `--verbose`：输出诊断细节
 
@@ -89,6 +96,20 @@ zvibe config explain
   "autoGitInit": true
 }
 ```
+
+## 界面截图
+
+### 单 Agent 模式（左侧 files/commit + 右侧 agent）
+
+![单 Agent 模式](docs/screenshots/layout-single-agent.png)
+
+### 单 Agent + Terminal（右下 terminal）
+
+![单 Agent + Terminal](docs/screenshots/layout-with-terminal.png)
+
+### Agent Mode（`zvibe code`，右侧双 Agent 50/50）
+
+![Agent Mode 双 Agent](docs/screenshots/layout-code-mode.png)
 
 ## 开发
 

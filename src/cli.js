@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { Output } = require('./core/io');
@@ -27,6 +28,7 @@ function parseArgv(argv) {
     else if (arg === '--verbose') flags.verbose = true;
     else if (arg === '--yes') flags.yes = true;
     else if (arg === '--repair') flags.repair = true;
+    else if (arg === '--no-repair') flags.noRepair = true;
     else if (arg === '-t' || arg === '--terminal') flags.rightTerminal = true;
     else if (arg.startsWith('--backend=')) flags.backend = arg.split('=')[1];
     else if (arg === '--backend') {
@@ -115,7 +117,7 @@ function selectBackend(requested, fallbackEnabled, output) {
 }
 
 function renderUsage() {
-  return `Zvibe Kits\n\nCommands:\n  zvibe setup [--yes] [--repair]\n  zvibe config wizard\n  zvibe config get <key>\n  zvibe config set <key> <value>\n  zvibe config validate\n  zvibe config explain\n  zvibe status [--doctor] [--json]\n  zvibe update\n\nRun:\n  zvibe\n  zvibe codex|claude|opencode|code\n  zvibe <dir> [codex|claude|opencode|code]\n  zvibe [codex|claude|opencode|code] <dir>\n\nGlobal:\n  --backend auto|ghostty|zellij   后端选择（auto: 优先 ghostty，失败降级 zellij）\n  -t, --terminal                  单 Agent 模式下右侧增加 Terminal（右上 Agent，右下 Terminal）\n  --json                          以 JSON 输出结果\n  --verbose                       输出诊断细节\n`;
+  return `Zvibe Kits\n\nCommands:\n  zvibe setup [--repair] [--no-repair]\n  zvibe config wizard\n  zvibe config get <key>\n  zvibe config set <key> <value>\n  zvibe config validate\n  zvibe config explain\n  zvibe status [--doctor] [--json]\n  zvibe update\n\nRun:\n  zvibe\n  zvibe codex|claude|opencode|code\n  zvibe <dir> [codex|claude|opencode|code]\n  zvibe [codex|claude|opencode|code] <dir>\n\nGlobal:\n  --backend auto|ghostty|zellij   后端选择（auto: 优先 ghostty，失败降级 zellij）\n  -t, --terminal                  单 Agent 模式下右侧增加 Terminal（右上 Agent，右下 Terminal）\n  --json                          以 JSON 输出结果\n  --verbose                       输出诊断细节\n`;
 }
 
 function commandSummary(summary, output) {
@@ -154,17 +156,80 @@ function ensureCask(appDir, cask, output, { install = false } = {}) {
   return true;
 }
 
+function ensureTextFile(filePath, content, { overwrite = false } = {}) {
+  if (fs.existsSync(filePath) && !overwrite) return 'exists';
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content, 'utf8');
+  return 'written';
+}
+
+function ensurePluginConfigs(output, { overwrite = true } = {}) {
+  const yaziToml = `[mgr]
+ratio = [0, 4, 6]
+
+[preview]
+max_width = 2000
+max_height = 2400
+
+[opener]
+edit = [
+  { run = "\${EDITOR:-vim} %s", desc = "edit", for = "unix", block = true },
+]
+`;
+
+  const yaziKeymap = `"$schema" = "https://yazi-rs.github.io/schemas/keymap.json"
+
+[mgr]
+prepend_keymap = [
+  { on = "e", run = "open", desc = "Edit selected file" },
+  { on = "o", run = "open", desc = "Edit selected file" },
+  { on = "v", run = 'shell --block "bat --paging=always --style=plain \\"$@\\""', desc = "View file with bat pager" },
+  { on = "<Enter>", run = "enter", desc = "Enter directory" },
+]
+`;
+
+  const zellijLayout = `layout {
+  pane split_direction="Vertical" {
+    pane size="40%" split_direction="Horizontal" {
+      pane
+      pane
+    }
+    pane size="60%" split_direction="Horizontal" {
+      pane size="70%"
+      pane size="30%"
+    }
+  }
+}
+`;
+
+  const yaziConfigPath = path.join(os.homedir(), '.config', 'yazi', 'yazi.toml');
+  const yaziKeymapPath = path.join(os.homedir(), '.config', 'yazi', 'keymap.toml');
+  const zellijLayoutPath = path.join(os.homedir(), '.config', 'zellij', 'layouts', 'zvibe.kdl');
+
+  const mode = { overwrite };
+  const yaziConfigResult = ensureTextFile(yaziConfigPath, yaziToml, mode);
+  const yaziKeymapResult = ensureTextFile(yaziKeymapPath, yaziKeymap, mode);
+  const zellijLayoutResult = ensureTextFile(zellijLayoutPath, zellijLayout, mode);
+
+  output.info(`插件配置: yazi.toml ${yaziConfigResult === 'written' ? (overwrite ? '已覆盖写入' : '已写入') : '已存在，跳过'}`);
+  output.info(`插件配置: keymap.toml ${yaziKeymapResult === 'written' ? (overwrite ? '已覆盖写入' : '已写入') : '已存在，跳过'}`);
+  output.info(`插件配置: zellij layout ${zellijLayoutResult === 'written' ? (overwrite ? '已覆盖写入' : '已写入') : '已存在，跳过'}`);
+  output.info('插件配置: keifu 使用默认配置（当前版本无需额外配置文件）');
+}
+
 async function cmdSetup(flags, output) {
   needMacOS();
-  const autoInstall = !!flags.yes;
+  const autoInstall = true;
   const repairMode = !!flags.repair;
+  const noRepair = !!flags.noRepair;
+  const overwritePluginConfigs = noRepair ? false : true;
   if (!output.json) {
     process.stdout.write('== Step 1/2 检测安装 ==\n');
   }
 
   if (!commandExists('brew')) {
     if (!autoInstall) {
-      throw new ZvibeError(ERRORS.COMMAND_MISSING, '未检测到 Homebrew', '请先安装 Homebrew，或使用 zvibe setup --yes 自动安装');
+      throw new ZvibeError(ERRORS.COMMAND_MISSING, '未检测到 Homebrew', '请先安装 Homebrew 后重试 zvibe setup');
     }
     const installBrew = run('sh', ['-lc', '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"']);
     if (!installBrew.ok) throw new ZvibeError(ERRORS.COMMAND_MISSING, 'Homebrew 安装失败');
@@ -176,12 +241,12 @@ async function cmdSetup(flags, output) {
   ensureCommandOrBrew('yazi', 'yazi', output, { install: autoInstall || repairMode });
   ensureCommandOrBrew('gum', 'gum', output, { install: autoInstall || repairMode });
 
-  if (!commandExists('keifu') && (autoInstall || repairMode)) {
+  if (!commandExists('keifu')) {
     run('brew', ['tap', 'trasta298/tap']);
     ensureCommandOrBrew('keifu', 'trasta298/tap/keifu', output, { install: true });
   }
 
-  if (!commandExists('opencode') && (autoInstall || repairMode)) {
+  if (!commandExists('opencode')) {
     run('brew', ['tap', 'anomalyco/tap']);
     ensureCommandOrBrew('opencode', 'anomalyco/tap/opencode', output, { install: true });
   }
@@ -193,6 +258,8 @@ async function cmdSetup(flags, output) {
     ensureCask('/Applications/Claude Code.app', 'claude-code', output, { install: autoInstall || repairMode });
   }
 
+  ensurePluginConfigs(output, { overwrite: overwritePluginConfigs });
+
   if (!output.json) {
     process.stdout.write('\n== Step 2/2 设置 ==\n');
   }
@@ -201,19 +268,17 @@ async function cmdSetup(flags, output) {
   let pairTop = current.agentPair[0];
   let pairBottom = current.agentPair[1];
 
-  if (!flags.yes && !repairMode) {
-    if (!process.stdin.isTTY && !output.json) {
-      output.warn('检测到非交互终端，设置步骤将使用默认值');
-    }
-    process.stdout.write('\n[设置 1/3] Default Agent\n');
-    defaultAgent = await askAgentChoice('DefaultAgent', defaultAgent, output);
-
-    process.stdout.write('\n[设置 2/3] AgentMode 右上\n');
-    pairTop = await askAgentChoice('AgentMode 右上 Agent', pairTop, output);
-
-    process.stdout.write('\n[设置 3/3] AgentMode 右下\n');
-    pairBottom = await askAgentChoice('AgentMode 右下 Agent', pairBottom, output);
+  if (!process.stdin.isTTY && !output.json) {
+    output.warn('检测到非交互终端，设置步骤将使用默认值');
   }
+  process.stdout.write('\n[设置 1/3] Default Agent\n');
+  defaultAgent = await askAgentChoice('DefaultAgent', defaultAgent, output);
+
+  process.stdout.write('\n[设置 2/3] AgentMode 右上\n');
+  pairTop = await askAgentChoice('AgentMode 右上 Agent', pairTop, output);
+
+  process.stdout.write('\n[设置 3/3] AgentMode 右下\n');
+  pairBottom = await askAgentChoice('AgentMode 右下 Agent', pairBottom, output);
 
   if (!AGENTS.includes(defaultAgent)) {
     throw new ZvibeError(ERRORS.AGENT_INVALID, `defaultAgent 非法: ${defaultAgent}`);
