@@ -1,13 +1,13 @@
 # zvibe
 
-zvibe：一个面向你的 Vibe Coding Space 的会话优先管理面板。  
-zvibe: a session-first panel for your vibe coding space.
+Zvibe 是一个会话优先的终端 Vibe Coding Agent 管理工具，围绕 zellij 提供统一命令来启动、会话复用、切换和清理编码会话，并把多 Agent 协作、参数透传、工作区布局和日常开发入口整合成一套轻量高效的工作流。
 
 ## 插件用途
 
 - 快速启动标准化开发面板（文件 / commit / agent）
 - 一键切换单 Agent 与双 Agent（Agent Mode）
 - 用统一命令管理后端、配置、诊断和更新
+- Agent会话管理，基于zellij（tmnux）
 
 ## 核心能力
 
