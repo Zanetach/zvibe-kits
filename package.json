@@ -1,7 +1,7 @@
 {
-  "name": "zvibe-kits",
-  "version": "1.3.4",
-  "description": "Zvibe - Ghostty/zellij multi-agent development workspace launcher",
+  "name": "zvibe",
+  "version": "2.0.0",
+  "description": "zvibe - session-first multi-agent development workspace launcher (zellij backend)",
   "scripts": {
     "verify:bin": "bash scripts/verify-bin.sh",
     "prepack": "npm run verify:bin"
@@ -10,7 +10,6 @@
     "zvibe": "bin/zvibe"
   },
   "keywords": [
-    "ghostty",
     "zellij",
     "claude",
     "codex",
@@ -23,12 +22,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Zanetach/zvibe-kits.git"
+    "url": "https://github.com/Zanetach/zvibe.git"
   },
   "bugs": {
-    "url": "https://github.com/Zanetach/zvibe-kits/issues"
+    "url": "https://github.com/Zanetach/zvibe/issues"
   },
-  "homepage": "https://github.com/Zanetach/zvibe-kits#readme",
+  "homepage": "https://github.com/Zanetach/zvibe#readme",
   "engines": {
     "node": ">=18"
   },

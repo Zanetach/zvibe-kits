@@ -6,10 +6,9 @@ const readline = require('readline');
 const { Output } = require('./core/io');
 const { run, commandExists } = require('./core/process');
 const { ZvibeError, ERRORS } = require('./core/errors');
-const { AGENTS, MODES, BACKENDS } = require('./core/constants');
+const { AGENTS, MODES } = require('./core/constants');
 const { loadConfig, saveConfig, defaultConfig, mergeWithPriority, validate, normalizeBackend } = require('./core/config');
 const { agentCommand } = require('./core/agents');
-const ghosttyBackend = require('./backends/ghostty');
 const zellijBackend = require('./backends/zellij');
 
 function needMacOS() {
@@ -19,16 +18,23 @@ function needMacOS() {
 }
 
 function parseArgv(argv) {
-  const flags = { json: false, verbose: false, yes: false, repair: false };
+  const flags = { json: false, verbose: false, yes: false, repair: false, passthroughArgs: [], doubleDashArgs: [] };
   const positional = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--json') flags.json = true;
+    if (arg === '--' || arg === '-p' || arg === '-P' || arg === '--passthrough') {
+      flags.doubleDashArgs = argv.slice(i + 1);
+      break;
+    }
+    if (arg === '--help' || arg === '-h') flags.help = true;
+    else if (arg === '--json') flags.json = true;
     else if (arg === '--verbose') flags.verbose = true;
     else if (arg === '--yes') flags.yes = true;
     else if (arg === '--repair') flags.repair = true;
     else if (arg === '--no-repair') flags.noRepair = true;
+    else if (arg === '--reuse-session') flags.reuseSession = true;
+    else if (arg === '--fresh-session') flags.freshSession = true;
     else if (arg === '-t' || arg === '--terminal') flags.rightTerminal = true;
     else if (arg.startsWith('--backend=')) flags.backend = arg.split('=')[1];
     else if (arg === '--backend') {
@@ -42,10 +48,26 @@ function parseArgv(argv) {
     } else if (arg === '--fallback=false') flags.fallback = false;
     else if (arg === '--fallback=true') flags.fallback = true;
     else if (arg === '--doctor') flags.doctor = true;
+    else if ((positional[0] === 'session') && ['-a', '-k', '-l', '--attach', '--kill', '--list'].includes(arg)) positional.push(arg);
+    else if (arg.startsWith('-')) flags.passthroughArgs.push(arg);
     else positional.push(arg);
   }
 
   return { flags, positional };
+}
+
+function shellQuoteArg(arg) {
+  const value = String(arg)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '\\$')
+    .replace(/`/g, '\\`');
+  return `"${value}"`;
+}
+
+function withPassthrough(baseCommand, passthroughArgs) {
+  if (!passthroughArgs || passthroughArgs.length === 0) return baseCommand;
+  return `${baseCommand} ${passthroughArgs.map(shellQuoteArg).join(' ')}`;
 }
 
 async function ask(question, fallback) {
@@ -71,53 +93,56 @@ async function askAgentChoice(label, fallback, output) {
   }
 }
 
-async function askBackendChoice(label, fallback, output) {
-  if (!process.stdin.isTTY) {
-    if (!output.json) output.ok(`${label} 已设置为 ${fallback}`);
-    return fallback;
-  }
-  while (true) {
-    const value = await ask(`${label} (${BACKENDS.join('/')})，默认 ${fallback}:`, fallback);
-    const chosen = value || fallback;
-    if (BACKENDS.includes(chosen)) {
-      if (!output.json) output.ok(`${label} 已设置为 ${chosen}`);
-      return chosen;
-    }
-    if (!output.json) output.warn(`输入无效：${chosen}，请从 ${BACKENDS.join('/')} 中选择`);
-  }
-}
-
 function parseRun(positional) {
-  const p1 = positional[0];
-  const p2 = positional[1];
+  const looksLikePath = (value) => {
+    if (!value) return false;
+    return value.startsWith('/') || value.startsWith('./') || value.startsWith('../') || value === '.' || value === '..' || value.startsWith('~/') || value.includes('/');
+  };
+  const isDir = (value) => {
+    if (!value) return false;
+    try {
+      return fs.existsSync(value) && fs.statSync(value).isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  const isTargetDirToken = (value) => isDir(value) || looksLikePath(value);
 
-  if (MODES.includes(p1)) return { mode: p1, targetDir: p2 || process.cwd() };
-  if (MODES.includes(p2)) return { mode: p2, targetDir: p1 || process.cwd() };
-  return { mode: '', targetDir: p1 || process.cwd() };
+  const modeIndex = positional.findIndex((item) => MODES.includes(item));
+  if (modeIndex === 0) {
+    const maybeDir = positional[1];
+    const hasExplicitDir = isTargetDirToken(maybeDir);
+    return {
+      mode: positional[0],
+      targetDir: hasExplicitDir ? maybeDir : process.cwd(),
+      agentArgs: positional.slice(hasExplicitDir ? 2 : 1)
+    };
+  }
+  if (modeIndex === 1) {
+    return { mode: positional[1], targetDir: positional[0] || process.cwd(), agentArgs: positional.slice(2) };
+  }
+  if (modeIndex > 1) {
+    return {
+      mode: positional[modeIndex],
+      targetDir: positional[0] || process.cwd(),
+      agentArgs: positional.slice(1, modeIndex).concat(positional.slice(modeIndex + 1))
+    };
+  }
+  return { mode: '', targetDir: positional[0] || process.cwd(), agentArgs: positional.slice(1) };
 }
 
-function selectBackend(requested, fallbackEnabled, output) {
-  const g = ghosttyBackend.healthcheck();
+function selectBackend(requested, output) {
   const z = zellijBackend.healthcheck();
 
-  if (requested && requested !== 'auto') {
-    if (requested === 'ghostty' && !g.ok) throw g.error;
-    if (requested === 'zellij' && !z.ok) throw z.error;
-    return requested;
+  if (requested && requested !== 'zellij' && !output.json) {
+    output.warn(`backend=${requested} 已归一化为 zellij`);
   }
-
-  if (g.ok) return 'ghostty';
-  if (fallbackEnabled && z.ok) {
-    output.warn('Ghostty 不可用，已自动降级到 zellij');
-    return 'zellij';
-  }
-
-  if (!g.ok) throw g.error;
-  throw new ZvibeError(ERRORS.BACKEND_INVALID, '未找到可用后端');
+  if (!z.ok) throw z.error;
+  return 'zellij';
 }
 
 function renderUsage() {
-  return `${renderBanner()}Commands:\n  zvibe setup [--repair] [--no-repair]\n  zvibe config wizard\n  zvibe config get <key>\n  zvibe config set <key> <value>\n  zvibe config validate\n  zvibe config explain\n  zvibe status [--doctor] [--json]\n  zvibe update\n\nRun:\n  zvibe\n  zvibe codex|claude|opencode|code\n  zvibe <dir> [codex|claude|opencode|code]\n  zvibe [codex|claude|opencode|code] <dir>\n\nGlobal:\n  --backend auto|ghostty|zellij   后端选择（auto: 优先 ghostty，失败降级 zellij）\n  -t, --terminal                  单 Agent 模式下右侧增加 Terminal（右上 Agent，右下 Terminal）\n  --json                          以 JSON 输出结果\n  --verbose                       输出诊断细节\n`;
+  return `${renderBanner()}Commands:\n  zvibe setup [--repair] [--no-repair]\n  zvibe config wizard\n  zvibe config get <key>\n  zvibe config set <key> <value>\n  zvibe config validate\n  zvibe config explain\n  zvibe status [--doctor] [--json]\n  zvibe update\n  zvibe session list\n  zvibe session attach <name>\n  zvibe session kill <name>\n  zvibe session -l | -a <name> | -k <name>\n\nRun:\n  zvibe\n  zvibe codex|claude|opencode|code\n  zvibe <dir> [codex|claude|opencode|code]\n  zvibe [codex|claude|opencode|code] <dir>\n  zvibe <agent> -p <agent args...>\n  zvibe <agent> -- <agent args...>\n\nGlobal:\n  --backend zellij                后端选择（当前仅支持 zellij）\n  --fresh-session                 同目录会话存在时强制删除并重建\n  --reuse-session                 兼容参数（当前默认已是优先 attach）\n  -p, --passthrough               将后续参数全部透传给 Agent\n  -t, --terminal                  单 Agent 模式下右侧增加 Terminal（右上 Agent，右下 Terminal）\n  --json                          以 JSON 输出结果\n  --verbose                       输出诊断细节\n`;
 }
 
 function renderBanner() {
@@ -128,11 +153,48 @@ function renderBanner() {
  / /_| |_| | | |_) / /|   <  __/ . \\| | | |_   
 /_____\\__,_|_|_.__/___|_|\\_\\___|_|\\_\\_|_|\\__|  
 
-                 Zvibe Kits\n\n`;
+                 zvibe\n\n`;
 }
 
 function commandSummary(summary, output) {
   output.flushJson(summary);
+}
+
+function levenshtein(a, b) {
+  const s = String(a || '');
+  const t = String(b || '');
+  const rows = s.length + 1;
+  const cols = t.length + 1;
+  const dp = Array.from({ length: rows }, () => Array(cols).fill(0));
+  for (let i = 0; i < rows; i += 1) dp[i][0] = i;
+  for (let j = 0; j < cols; j += 1) dp[0][j] = j;
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[s.length][t.length];
+}
+
+function suggestTopCommand(input) {
+  const known = ['setup', 'config', 'status', 'update', 'session', 'help', ...MODES];
+  let best = null;
+  let bestScore = Infinity;
+  known.forEach((item) => {
+    const score = levenshtein(input, item);
+    if (score < bestScore) {
+      best = item;
+      bestScore = score;
+    }
+  });
+  if (!best) return null;
+  const threshold = Math.max(1, Math.floor(String(best).length / 3));
+  return bestScore <= threshold ? best : null;
 }
 
 function ensureCommandOrBrew(command, formula, output, { install = false } = {}) {
@@ -382,23 +444,20 @@ async function cmdConfig(positional, output) {
     }
   }
 
-  if (!output.json) process.stdout.write('\n[设置 1/4] Default Agent\n');
+  if (!output.json) process.stdout.write('\n[设置 1/3] Default Agent\n');
   const defaultAgent = await askAgentChoice('DefaultAgent', config.defaultAgent, output);
 
-  if (!output.json) process.stdout.write('\n[设置 2/4] AgentMode 右上\n');
+  if (!output.json) process.stdout.write('\n[设置 2/3] AgentMode 右上\n');
   const pairTop = await askAgentChoice('AgentMode 右上 Agent', config.agentPair[0], output);
 
-  if (!output.json) process.stdout.write('\n[设置 3/4] AgentMode 右下\n');
+  if (!output.json) process.stdout.write('\n[设置 3/3] AgentMode 右下\n');
   const pairBottom = await askAgentChoice('AgentMode 右下 Agent', config.agentPair[1], output);
-
-  if (!output.json) process.stdout.write('\n[设置 4/4] 后端策略\n');
-  const backend = await askBackendChoice('Backend', config.backend, output);
 
   const next = {
     ...config,
     defaultAgent: defaultAgent || config.defaultAgent,
     agentPair: [pairTop || config.agentPair[0], pairBottom || config.agentPair[1]],
-    backend: normalizeBackend(backend || config.backend),
+    backend: 'zellij',
     rightTerminal: config.rightTerminal,
     initialized: true
   };
@@ -409,7 +468,6 @@ async function cmdConfig(positional, output) {
     process.stdout.write('\n配置摘要：\n');
     process.stdout.write(`- defaultAgent: ${next.defaultAgent}\n`);
     process.stdout.write(`- AgentMode: [${next.agentPair[0]}, ${next.agentPair[1]}]\n`);
-    process.stdout.write(`- backend: ${next.backend}\n`);
   }
   output.ok(`配置已保存到 ${file}`);
   commandSummary({ ok: true, command: 'config wizard', file }, output);
@@ -444,7 +502,7 @@ function cmdStatus(flags, output) {
     configError = error.message;
   }
 
-  const runChecks = [ghosttyBackend.healthcheck(), zellijBackend.healthcheck()].map((item) => ({
+  const runChecks = [zellijBackend.healthcheck()].map((item) => ({
     backend: item.backend,
     ok: item.ok,
     error: item.ok ? null : item.error.message
@@ -482,6 +540,43 @@ function cmdUpdate(output) {
   run('brew', ['cleanup']);
   output.ok('更新完成');
   commandSummary({ ok: true, command: 'update' }, output);
+}
+
+function cmdSession(positional, output) {
+  const rawSub = positional[1] || 'list';
+  const sub = (rawSub === '-l' || rawSub === '--list')
+    ? 'list'
+    : ((rawSub === '-a' || rawSub === '--attach')
+      ? 'attach'
+      : ((rawSub === '-k' || rawSub === '--kill') ? 'kill' : rawSub));
+  if (sub === 'list') {
+    const sessions = zellijBackend.listSessions();
+    if (!output.json) {
+      if (sessions.length === 0) output.info('当前没有 zvibe 会话');
+      else sessions.forEach((name) => process.stdout.write(`${name}\n`));
+    }
+    commandSummary({ ok: true, command: 'session list', sessions }, output);
+    return;
+  }
+
+  if (sub === 'kill') {
+    const name = positional[2];
+    if (!name) throw new ZvibeError(ERRORS.RUN_FAILED, '缺少会话名', '用法: zvibe session kill <name>');
+    const killed = zellijBackend.killSession(name);
+    output.ok(`会话已删除: ${killed}`);
+    commandSummary({ ok: true, command: 'session kill', session: killed }, output);
+    return;
+  }
+
+  if (sub === 'attach') {
+    const name = positional[2];
+    if (!name) throw new ZvibeError(ERRORS.RUN_FAILED, '缺少会话名', '用法: zvibe session attach <name>');
+    const attached = zellijBackend.attachSession(name);
+    commandSummary({ ok: true, command: 'session attach', session: attached }, output);
+    return;
+  }
+
+  throw new ZvibeError(ERRORS.RUN_FAILED, `未知 session 子命令: ${rawSub}`, '可用命令: zvibe session list | zvibe session -l | zvibe session attach <name> | zvibe session -a <name> | zvibe session kill <name> | zvibe session -k <name>');
 }
 
 function isUnsafeAutoGitInitTarget(targetDir) {
@@ -567,7 +662,13 @@ function cmdRun(positional, flags, output) {
 
   const targetDir = path.resolve(parsed.targetDir);
   const codeMode = mode === 'code';
-  const primaryAgent = codeMode ? agentCommand(config.agentPair[0]) : agentCommand(mode);
+  const passthroughArgs = []
+    .concat(flags.passthroughArgs || [])
+    .concat(parsed.agentArgs || [])
+    .concat(flags.doubleDashArgs || []);
+  const primaryAgent = codeMode
+    ? agentCommand(config.agentPair[0])
+    : withPassthrough(agentCommand(mode), passthroughArgs);
   const secondaryAgent = codeMode ? agentCommand(config.agentPair[1]) : '';
   const commands = {
     leftTop: 'yazi',
@@ -577,21 +678,8 @@ function cmdRun(positional, flags, output) {
   };
 
   autoGitInit(targetDir, config, output);
-  const backend = selectBackend(config.backend, config.fallback, output);
-
-  if (backend === 'ghostty') {
-    try {
-      ghosttyBackend.launch({ targetDir, commands });
-    } catch (error) {
-      if (config.backend === 'auto' && config.fallback) {
-        zellijBackend.launch({ targetDir, commands });
-      } else {
-        throw error;
-      }
-    }
-  } else {
-    zellijBackend.launch({ targetDir, commands });
-  }
+  const backend = selectBackend(config.backend, output);
+  zellijBackend.launch({ targetDir, commands, freshSession: !!flags.freshSession });
 
   commandSummary({ ok: true, command: 'run', backend, mode, targetDir }, output);
 }
@@ -602,7 +690,7 @@ async function main() {
   const command = positional[0] || '';
 
   try {
-    if (['help', '--help', '-h'].includes(command)) {
+    if (flags.help || ['help', '--help', '-h'].includes(command)) {
       process.stdout.write(renderUsage());
       return;
     }
@@ -611,6 +699,18 @@ async function main() {
     if (command === 'config') return await cmdConfig(positional, output);
     if (command === 'status') return cmdStatus({ doctor: !!flags.doctor || flags.verbose }, output);
     if (command === 'update') return cmdUpdate(output);
+    if (command === 'session') return cmdSession(positional, output);
+
+    if (command && !MODES.includes(command)) {
+      const suggestion = suggestTopCommand(command);
+      if (suggestion) {
+        throw new ZvibeError(
+          ERRORS.RUN_FAILED,
+          `未知命令: ${command}`,
+          `你是不是想输入: zvibe ${suggestion}${positional[1] ? ` ${positional.slice(1).join(' ')}` : ''}`
+        );
+      }
+    }
 
     return cmdRun(positional, flags, output);
   } catch (error) {

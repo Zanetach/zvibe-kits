@@ -47,7 +47,7 @@ function validateBackend(value) {
 
 function normalizeBackend(value) {
   if (!value) return 'zellij';
-  if (value === 'tmux') return 'zellij';
+  if (['zellij', 'tmux', 'ghostty', 'auto'].includes(value)) return 'zellij';
   return value;
 }
 

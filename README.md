@@ -1,7 +1,7 @@
-# Zvibe Kits
+# zvibe
 
-Zvibe Kits 是一个面向 macOS 的多 Agent 开发工作台启动器。  
-它把文件浏览、提交查看和 Agent 会话组织到统一终端工作流里，降低上下文切换成本。
+zvibe：一个面向你的 Vibe Coding Space 的会话优先管理面板。  
+zvibe: a session-first panel for your vibe coding space.
 
 ## 插件用途
 
@@ -15,9 +15,11 @@ Zvibe Kits 是一个面向 macOS 的多 Agent 开发工作台启动器。
 - Agent Mode：`zvibe code` 同时启动两个 Agent
 - 终端面板组合：左上文件、左下 commit、右侧 Agent
 - 可选右下 Terminal：`-t, --terminal`（单 Agent 模式）
-- 后端策略：`ghostty` / `zellij` / `auto`
+- 后端策略：`zellij`
 - 自动 Git 初始化防呆：在 `HOME`/根目录自动跳过，避免误初始化
 - 配置管理与运维命令：`setup` / `config` / `status` / `update`
+- Session 管理：`session list` / `session attach <name>` / `session kill <name>`
+- Session 快捷参数：`session -l` / `session -a <name>` / `session -k <name>`
 - JSON 输出能力：`--json`（便于脚本集成）
 
 ## 安装说明
@@ -25,13 +27,13 @@ Zvibe Kits 是一个面向 macOS 的多 Agent 开发工作台启动器。
 ### 方式 1：全局安装
 
 ```bash
-npm i -g zvibe-kits
+npm i -g zvibe
 ```
 
 ### 方式 2：临时执行
 
 ```bash
-npx zvibe-kits setup
+npx zvibe setup
 ```
 
 ### 初始化建议
@@ -54,6 +56,10 @@ zvibe status --doctor
 ```bash
 zvibe
 zvibe codex|claude|opencode
+zvibe claude [agent-args...]
+zvibe codex [agent-args...]
+zvibe claude -p [agent-args...]
+zvibe claude -- [agent-args...]
 zvibe code
 zvibe code -t
 zvibe <dir> [codex|claude|opencode|code]
@@ -62,13 +68,16 @@ zvibe [codex|claude|opencode|code] <dir>
 
 ### 关键参数
 
-- `--backend ghostty`：强制使用 Ghostty 后端
-- `--backend zellij`：强制使用 zellij 后端
-- `--backend auto`：优先 Ghostty，不可用时降级 zellij
+- `--backend zellij`：后端配置（当前仅支持 zellij）
+- 默认：同目录会话已存在时优先 attach；attach 失败再清理并重建
+- `--fresh-session`：同目录会话存在时强制删除并重建
+- `--reuse-session`：兼容参数（当前默认已是优先 attach）
+- `-p, --passthrough`：将后续参数全部透传给 Agent（等价 `--` 分隔）
 - `-t, --terminal`：单 Agent 模式下在右侧增加 Terminal
 - `--no-repair`：`setup` 时不覆盖已有插件配置
 - `--json`：JSON 结构化输出
 - `--verbose`：输出诊断细节
+- 说明：在 `codex|claude|opencode` 之后追加的参数会原样透传给对应 Agent CLI；使用 `-p` 或 `--` 可强制把后续参数全部透传
 
 ### 配置命令
 
@@ -78,6 +87,12 @@ zvibe config get <key>
 zvibe config set <key> <value>
 zvibe config validate
 zvibe config explain
+zvibe session list
+zvibe session attach <name>
+zvibe session kill <name>
+zvibe session -l
+zvibe session -a <name>
+zvibe session -k <name>
 ```
 
 ### 配置文件路径
@@ -115,8 +130,8 @@ zvibe config explain
 ## 开发
 
 ```bash
-git clone https://github.com/Zanetach/zvibe-kits.git
-cd zvibe-kits
+git clone https://github.com/Zanetach/zvibe.git
+cd zvibe
 node src/cli.js --help
 ```
 

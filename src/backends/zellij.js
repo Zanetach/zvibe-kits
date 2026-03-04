@@ -62,22 +62,28 @@ function mustRun(command, args, hint, options = {}) {
   return result;
 }
 
-function cleanupSession(name) {
-  run('zellij', ['kill-session', name], { capture: true });
-  run('zellij', ['delete-session', name], { capture: true });
-}
-
 function applyPaneFrames() {
   run('zellij', ['options', '--pane-frames', 'true'], { capture: true });
 }
 
-function launch({ targetDir, commands }) {
+function launch({ targetDir, commands, freshSession = false }) {
   preflight();
   const name = `zvibe-${sessionName(targetDir)}`;
   const layoutFile = writeLayout(targetDir, commands);
 
   try {
     const inZellij = !!process.env.ZELLIJ;
+    const existing = !inZellij ? listSessions() : [];
+    if (!inZellij && existing.includes(name)) {
+      if (freshSession) {
+        mustRun('zellij', ['delete-session', '--force', name], '请检查 zellij 会话状态', { capture: true });
+      } else {
+        const attachResult = run('zellij', ['attach', name], { capture: false });
+        if (attachResult.ok) return;
+        mustRun('zellij', ['delete-session', '--force', name], '请检查 zellij 会话状态', { capture: true });
+      }
+    }
+
     if (inZellij) {
       // IMPORTANT: when already inside zellij, never kill/delete sessions here.
       // Otherwise we may terminate the current interactive session unexpectedly.
@@ -86,7 +92,6 @@ function launch({ targetDir, commands }) {
       return;
     }
 
-    cleanupSession(name);
     mustRun('zellij', ['-s', name, '-n', layoutFile], '请检查 zellij 配置后重试', { capture: false, cwd: targetDir });
   } finally {
     try {
@@ -104,4 +109,75 @@ function healthcheck() {
   }
 }
 
-module.exports = { name: 'zellij', preflight, launch, healthcheck, sessionName };
+function normalizeSessionInput(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  return raw.startsWith('zvibe-') ? raw : `zvibe-${raw}`;
+}
+
+function isValidSessionName(name) {
+  return /^[a-zA-Z0-9_-]+$/.test(name);
+}
+
+function listSessions() {
+  preflight();
+  const result = run('zellij', ['list-sessions', '--no-formatting', '--short'], { capture: true });
+  if (!result.ok) {
+    throw new ZvibeError(ERRORS.RUN_FAILED, 'zellij 会话列表读取失败', '请检查 zellij 状态后重试', result.stderr || result.stdout);
+  }
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && line.startsWith('zvibe-'));
+}
+
+function killSession(name) {
+  preflight();
+  const resolved = normalizeSessionInput(name);
+  if (!resolved) {
+    throw new ZvibeError(ERRORS.RUN_FAILED, '缺少会话名', '用法: zvibe session kill <name>');
+  }
+  if (!isValidSessionName(resolved)) {
+    throw new ZvibeError(ERRORS.RUN_FAILED, `非法会话名: ${name}`, '会话名仅允许字母、数字、下划线和短横线');
+  }
+
+  const deleteResult = run('zellij', ['delete-session', '--force', resolved], { capture: true });
+  if (!deleteResult.ok) {
+    throw new ZvibeError(ERRORS.RUN_FAILED, `删除会话失败: ${resolved}`, '请先执行 zvibe session list 确认名称', deleteResult.stderr || deleteResult.stdout);
+  }
+  return resolved;
+}
+
+function attachSession(name) {
+  preflight();
+  const resolved = normalizeSessionInput(name);
+  if (!resolved) {
+    throw new ZvibeError(ERRORS.RUN_FAILED, '缺少会话名', '用法: zvibe session attach <name>');
+  }
+  if (!isValidSessionName(resolved)) {
+    throw new ZvibeError(ERRORS.RUN_FAILED, `非法会话名: ${name}`, '会话名仅允许字母、数字、下划线和短横线');
+  }
+
+  const existing = listSessions();
+  if (!existing.includes(resolved)) {
+    throw new ZvibeError(ERRORS.RUN_FAILED, `会话不存在: ${resolved}`, '请先执行 zvibe session list 确认名称');
+  }
+
+  const result = run('zellij', ['attach', resolved], { capture: false });
+  if (!result.ok) {
+    throw new ZvibeError(ERRORS.RUN_FAILED, `attach 失败: ${resolved}`, '请检查 zellij 状态后重试', result.stderr || result.stdout);
+  }
+  return resolved;
+}
+
+module.exports = {
+  name: 'zellij',
+  preflight,
+  launch,
+  healthcheck,
+  sessionName,
+  listSessions,
+  killSession,
+  attachSession,
+  normalizeSessionInput
+};
