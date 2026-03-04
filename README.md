@@ -27,13 +27,13 @@ zvibe: a session-first panel for your vibe coding space.
 ### 方式 1：全局安装
 
 ```bash
-npm i -g zvibe
+npm i -g @zanetach/zvibe
 ```
 
 ### 方式 2：临时执行
 
 ```bash
-npx zvibe setup
+npx @zanetach/zvibe setup
 ```
 
 ### 初始化建议

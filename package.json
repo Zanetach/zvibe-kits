@@ -1,5 +1,5 @@
 {
-  "name": "zvibe",
+  "name": "@zanetach/zvibe",
   "version": "2.0.0",
   "description": "zvibe - session-first multi-agent development workspace launcher (zellij backend)",
   "scripts": {
