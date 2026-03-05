@@ -180,7 +180,7 @@ function selectBackend(requested, output) {
 }
 
 function renderUsage() {
-  return `${renderBanner()}Commands:\n  zvibe setup [--repair] [--no-repair]\n  zvibe config wizard\n  zvibe config get <key>\n  zvibe config set <key> <value>\n  zvibe config validate\n  zvibe config explain\n  zvibe status [--doctor] [--json]\n  zvibe update\n  zvibe session list\n  zvibe session attach <name>\n  zvibe session kill <name>\n  zvibe session -l | -a <name> | -k <name>\n\nRun:\n  zvibe\n  zvibe codex|claude|opencode|code\n  zvibe <dir> [codex|claude|opencode|code]\n  zvibe [codex|claude|opencode|code] <dir>\n  zvibe <agent> -p <agent args...>\n  zvibe <agent> -- <agent args...>\n\nGlobal:\n  --backend zellij                后端选择（当前仅支持 zellij）\n  --fresh-session                 同目录会话存在时强制删除并重建\n  --reuse-session                 兼容参数（当前默认已是优先 attach）\n  -p, --passthrough               将后续参数全部透传给 Agent\n  -t, --terminal                  单 Agent 模式下右侧增加 Terminal（右上 Agent，右下 Terminal）\n  --json                          以 JSON 输出结果\n  --verbose                       输出诊断细节\n`;
+  return `${renderBanner()}Commands:\n  zvibe setup [--repair] [--no-repair]\n  zvibe config wizard\n  zvibe config get <key>\n  zvibe config set <key> <value>\n  zvibe config validate\n  zvibe config explain\n  zvibe status [--doctor] [--json]\n  zvibe update\n  zvibe session list\n  zvibe session attach <name>\n  zvibe session kill <name>\n  zvibe session -l | -a <name> | -k <name>\n\nRun:\n  zvibe\n  zvibe codex|claude|opencode|code|terminal\n  zvibe <dir> [codex|claude|opencode|code|terminal]\n  zvibe [codex|claude|opencode|code|terminal] <dir>\n  zvibe <agent> -p <agent args...>\n  zvibe <agent> -- <agent args...>\n\nGlobal:\n  --backend zellij                后端选择（当前仅支持 zellij）\n  --fresh-session                 同目录会话存在时强制删除并重建\n  --reuse-session                 兼容参数（当前默认已是优先 attach）\n  -p, --passthrough               将后续参数全部透传给 Agent\n  -t, --terminal                  快捷进入 terminal-only session（无 agent）；在显式 agent 模式下表示右侧增加 Terminal\n  --json                          以 JSON 输出结果\n  --verbose                       输出诊断细节\n`;
 }
 
 function renderBanner() {
@@ -734,7 +734,7 @@ function resolveRunConfig(positional, flags) {
   const parsed = parseRun(positional);
   const loaded = loadConfig({ strict: true });
   const cli = {
-    defaultAgent: MODES.includes(parsed.mode) && parsed.mode !== 'code' ? parsed.mode : undefined,
+    defaultAgent: AGENTS.includes(parsed.mode) ? parsed.mode : undefined,
     agentPair: flags.agentPair && flags.agentPair.length === 2 ? flags.agentPair : undefined,
     backend: flags.backend,
     fallback: flags.fallback,
@@ -747,9 +747,17 @@ function resolveRunConfig(positional, flags) {
 function cmdRun(positional, flags, output) {
   needMacOS();
   const { parsed, config } = resolveRunConfig(positional, flags);
-  const mode = parsed.mode || config.defaultAgent;
+  const hasExplicitMode = !!parsed.mode;
+  const terminalOnlyByMode = parsed.mode === 'terminal';
+  const terminalOnlyByFlag = !!flags.rightTerminal
+    && !hasExplicitMode
+    && (!flags.passthroughArgs || flags.passthroughArgs.length === 0)
+    && (!parsed.agentArgs || parsed.agentArgs.length === 0)
+    && (!flags.doubleDashArgs || flags.doubleDashArgs.length === 0);
+  const terminalOnly = terminalOnlyByMode || terminalOnlyByFlag;
+  const mode = terminalOnly ? 'terminal' : (parsed.mode || config.defaultAgent);
 
-  if (mode !== 'code' && !AGENTS.includes(mode)) {
+  if (mode !== 'code' && mode !== 'terminal' && !AGENTS.includes(mode)) {
     throw new ZvibeError(ERRORS.AGENT_INVALID, `运行模式非法: ${mode}`);
   }
 
@@ -759,23 +767,26 @@ function cmdRun(positional, flags, output) {
     .concat(flags.passthroughArgs || [])
     .concat(parsed.agentArgs || [])
     .concat(flags.doubleDashArgs || []);
-  const primaryAgent = codeMode
-    ? buildAgentCommand(config.agentPair[0])
-    : buildAgentCommand(mode, passthroughArgs);
+  const primaryAgent = terminalOnly
+    ? 'true'
+    : (codeMode ? buildAgentCommand(config.agentPair[0]) : buildAgentCommand(mode, passthroughArgs));
   const secondaryAgent = codeMode ? buildAgentCommand(config.agentPair[1]) : '';
   const commands = {
     leftTop: 'yazi',
     leftBottom: 'keifu',
     rightTop: primaryAgent,
-    rightBottom: codeMode ? secondaryAgent : (config.rightTerminal ? 'true' : ''),
+    rightTopRole: terminalOnly ? 'terminal' : 'agent',
+    rightBottom: terminalOnly ? '' : (codeMode ? secondaryAgent : (config.rightTerminal ? 'true' : '')),
     statusBar: buildStatusBarCommand({
-      primaryAgent: codeMode ? config.agentPair[0] : mode,
+      primaryAgent: terminalOnly ? '' : (codeMode ? config.agentPair[0] : mode),
       secondaryAgent: codeMode ? config.agentPair[1] : ''
     })
   };
-  const sessionTag = codeMode
+  const sessionTag = terminalOnly
+    ? 'terminal-sb2'
+    : (codeMode
     ? `code-${config.agentPair[0]}-${config.agentPair[1]}-sb2`
-    : `${mode}-sb2`;
+    : `${mode}-sb2`);
 
   autoGitInit(targetDir, config, output);
   const backend = selectBackend(config.backend, output);

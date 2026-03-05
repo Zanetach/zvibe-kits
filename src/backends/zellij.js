@@ -41,9 +41,10 @@ function buildLayout(targetDir, commands) {
   const leftTop = paneKdl(targetDir, commands.leftTop, `${panePrefix}:file`);
   const leftBottom = paneKdl(targetDir, commands.leftBottom, `${panePrefix}:commit`);
   const rightBottomIsTerminal = commands.rightBottom === 'true';
+  const rightTopRole = commands.rightTopRole || 'agent';
   const rightTopSize = rightBottomIsTerminal ? '70%' : '50%';
   const rightBottomSize = rightBottomIsTerminal ? '30%' : '50%';
-  const rightTop = paneKdl(targetDir, commands.rightTop, `${panePrefix}:agent`, rightTopSize);
+  const rightTop = paneKdl(targetDir, commands.rightTop, `${panePrefix}:${rightTopRole}`, rightTopSize);
   const statusBar = paneKdl(targetDir, commands.statusBar || 'true', `${panePrefix}:monitor`, '3');
 
   if (!commands.rightBottom) {
