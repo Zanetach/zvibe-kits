@@ -15,7 +15,8 @@ let cpuHistory = [];
 let prevCpu = readCpuSnapshot();
 let prevNet = readNetworkBytes();
 let prevAt = Date.now();
-let usageState = { model: null, input: null, output: null, total: null };
+let usageState = { model: null, input: null, output: null, total: null, context: null, cost: null };
+let gpuState = { model: null, util: null, raw: null };
 
 function readCpuSnapshot() {
   const cpus = os.cpus();
@@ -41,25 +42,26 @@ function readNetworkBytes() {
   try {
     const output = execSync('netstat -ibn', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     const lines = output.split('\n').filter(Boolean);
-    if (lines.length < 2) return 0;
+    if (lines.length < 2) return { inBytes: 0, outBytes: 0 };
     const header = lines[0].trim().split(/\s+/);
     const iBytesIdx = header.indexOf('Ibytes');
     const oBytesIdx = header.indexOf('Obytes');
-    if (iBytesIdx < 0 || oBytesIdx < 0) return 0;
+    if (iBytesIdx < 0 || oBytesIdx < 0) return { inBytes: 0, outBytes: 0 };
 
-    let total = 0;
+    let inBytesTotal = 0;
+    let outBytesTotal = 0;
     for (let i = 1; i < lines.length; i += 1) {
       const cols = lines[i].trim().split(/\s+/);
       if (cols.length <= Math.max(iBytesIdx, oBytesIdx)) continue;
       if (cols[0] === 'lo0') continue;
       const iBytes = Number(cols[iBytesIdx]);
       const oBytes = Number(cols[oBytesIdx]);
-      if (Number.isFinite(iBytes)) total += iBytes;
-      if (Number.isFinite(oBytes)) total += oBytes;
+      if (Number.isFinite(iBytes)) inBytesTotal += iBytes;
+      if (Number.isFinite(oBytes)) outBytesTotal += oBytes;
     }
-    return total;
+    return { inBytes: inBytesTotal, outBytes: outBytesTotal };
   } catch {
-    return 0;
+    return { inBytes: 0, outBytes: 0 };
   }
 }
 
@@ -173,11 +175,14 @@ function readCodexUsage() {
 
       if (!usage && obj.type === 'event_msg' && obj.payload && obj.payload.type === 'token_count') {
         const total = obj.payload.info && obj.payload.info.total_token_usage;
+        const ctx = obj.payload.info && obj.payload.info.model_context_window;
         if (total) {
           usage = {
             input: Number(total.input_tokens),
             output: Number(total.output_tokens),
-            total: Number(total.total_tokens)
+            total: Number(total.total_tokens),
+            context: Number(ctx),
+            cost: null
           };
         }
       }
@@ -192,7 +197,9 @@ function readCodexUsage() {
         model,
         input: usage && Number.isFinite(usage.input) ? usage.input : null,
         output: usage && Number.isFinite(usage.output) ? usage.output : null,
-        total: usage && Number.isFinite(usage.total) ? usage.total : null
+        total: usage && Number.isFinite(usage.total) ? usage.total : null,
+        context: usage && Number.isFinite(usage.context) ? usage.context : null,
+        cost: usage && Number.isFinite(usage.cost) ? usage.cost : null
       };
     }
   }
@@ -226,13 +233,17 @@ function readClaudeUsage() {
       const metadata = parseClaudeMetadata(event.additional_metadata);
       const input = metadata && Number(metadata.last_session_total_input_tokens);
       const output = metadata && Number(metadata.last_session_total_output_tokens);
+      const context = metadata && Number(metadata.last_session_context_window);
+      const cost = metadata && Number(metadata.last_session_cost);
       const total = Number.isFinite(input) && Number.isFinite(output) ? input + output : null;
 
       return {
         model,
         input: Number.isFinite(input) ? input : null,
         output: Number.isFinite(output) ? output : null,
-        total
+        total,
+        context: Number.isFinite(context) ? context : null,
+        cost: Number.isFinite(cost) ? cost : null
       };
     }
   }
@@ -244,7 +255,7 @@ function readClaudeUsage() {
     if (!match || !match.length) continue;
     const last = match[match.length - 1].match(/"model"\s*:\s*"([^"]+)"/);
     if (last && last[1]) {
-      return { model: last[1], input: null, output: null, total: null };
+      return { model: last[1], input: null, output: null, total: null, context: null, cost: null };
     }
   }
 
@@ -259,9 +270,44 @@ function readOpencodeUsage() {
     const modelMatch = [...tail.matchAll(/"model"\s*:\s*"([^"]+)"/g)];
     if (!modelMatch.length) continue;
     const model = modelMatch[modelMatch.length - 1][1];
-    return { model, input: null, output: null, total: null };
+    return { model, input: null, output: null, total: null, context: null, cost: null };
   }
   return null;
+}
+
+function readGpuInfo() {
+  // Best-effort on macOS without root: derive activity from ioreg AppUsage accumulatedGPUTime deltas.
+  // When unavailable, we still return model if possible.
+  try {
+    const sp = execSync('system_profiler SPDisplaysDataType 2>/dev/null', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const m = sp.match(/Chipset Model:\\s*([^\\n]+)/);
+    if (m && m[1]) gpuState.model = m[1].trim();
+  } catch {}
+
+  try {
+    const raw = execSync('ioreg -l 2>/dev/null', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 8 * 1024 * 1024
+    });
+    const matches = [...raw.matchAll(/"accumulatedGPUTime"\\s*=\\s*(\\d+)/g)];
+    if (!matches.length) return gpuState;
+    let total = 0;
+    matches.forEach((x) => { total += Number(x[1]) || 0; });
+
+    if (gpuState.raw != null) {
+      const delta = Math.max(0, total - gpuState.raw);
+      // Empirical normalization for Apple Silicon; keeps range mostly in 0-100 for interactive loads.
+      const util = Math.max(0, Math.min(100, Math.round((delta / 5e9) * 100)));
+      gpuState.util = util;
+    }
+    gpuState.raw = total;
+  } catch {}
+
+  return gpuState;
 }
 
 function preferredAgents() {
@@ -291,7 +337,9 @@ function resolveUsage() {
   }
 
   // ultimate fallback
-  return readCodexUsage() || readClaudeUsage() || readOpencodeUsage() || { model: null, input: null, output: null, total: null };
+  return readCodexUsage() || readClaudeUsage() || readOpencodeUsage() || {
+    model: null, input: null, output: null, total: null, context: null, cost: null
+  };
 }
 
 function render() {
@@ -300,6 +348,7 @@ function render() {
 
   if (tick % RESCAN_EVERY === 1) {
     usageState = resolveUsage();
+    gpuState = readGpuInfo();
   }
 
   const now = Date.now();
@@ -312,13 +361,16 @@ function render() {
 
   const memUsed = ((os.totalmem() - os.freemem()) / os.totalmem()) * 100;
   const netNow = readNetworkBytes();
-  const netRate = Math.max(0, (netNow - prevNet) / elapsed);
+  const netInRate = Math.max(0, (netNow.inBytes - prevNet.inBytes) / elapsed);
+  const netOutRate = Math.max(0, (netNow.outBytes - prevNet.outBytes) / elapsed);
   prevNet = netNow;
 
-  const left = `CPU ${formatPercent(cpu)} ${sparkline(cpuHistory)}  MEM ${formatPercent(memUsed)}  NET ${formatRate(netRate)}`;
-  const modelLabel = `MODEL ${shorten(usageState.model || '--', 24)}`;
+  const gpuLabel = `GPU ${gpuState.util == null ? '--' : `${gpuState.util}%`} ${shorten(gpuState.model || '', 10)}`.trim();
+  const left = `CPU ${formatPercent(cpu)} ${sparkline(cpuHistory)}  ${gpuLabel}  MEM ${formatPercent(memUsed)}  NET IN ${formatRate(netInRate)} OUT ${formatRate(netOutRate)}`;
+  const modelLabel = `MODEL ${shorten(usageState.model || '--', 20)}`;
   const tokenLabel = `TOK I ${usageState.input == null ? '--' : usageState.input.toLocaleString()} O ${usageState.output == null ? '--' : usageState.output.toLocaleString()} T ${usageState.total == null ? '--' : usageState.total.toLocaleString()}`;
-  const right = `${modelLabel}  ${tokenLabel}  ${SPINNER[spin]}`;
+  const ctxCostLabel = `CTX ${usageState.context == null ? '--' : usageState.context.toLocaleString()} COST ${usageState.cost == null ? '--' : `$${usageState.cost.toFixed(4)}`}`;
+  const right = `${modelLabel}  ${tokenLabel}  ${ctxCostLabel}  ${SPINNER[spin]}`;
   const line = `${left}  |  ${right}`;
 
   if (!process.stdout.isTTY) {
