@@ -37,7 +37,7 @@ function paneKdl(targetDir, command, paneName, size = null) {
   const shell = process.env.SHELL || '/bin/zsh';
   const cmd = shellWrap(targetDir, command);
   const sizeAttr = size ? ` size="${escapeKdl(size)}"` : '';
-  return `pane name="${escapeKdl(paneName)}"${sizeAttr} borderless=true command="${escapeKdl(shell)}" {\n        args "-lc" "${escapeKdl(cmd)}"\n      }`;
+  return `pane name="${escapeKdl(paneName)}"${sizeAttr} command="${escapeKdl(shell)}" {\n        args "-lc" "${escapeKdl(cmd)}"\n      }`;
 }
 
 function buildLayout(targetDir, commands) {
@@ -51,8 +51,8 @@ function buildLayout(targetDir, commands) {
     return `layout {\n  pane split_direction="Horizontal" {\n    pane size="94%" {\n      ${rightTop}\n    }\n    ${statusBar}\n  }\n}\n`;
   }
 
-  const leftTop = paneKdl(targetDir, commands.leftTop, `${panePrefix}:file`);
-  const leftBottom = paneKdl(targetDir, commands.leftBottom, `${panePrefix}:commit`);
+  const leftTop = paneKdl(targetDir, commands.leftTop, `${panePrefix}:file`, '60%');
+  const leftBottom = paneKdl(targetDir, commands.leftBottom, `${panePrefix}:commit`, '40%');
   const rightBottomIsTerminal = commands.rightBottom === 'true';
   const rightTopSize = rightBottomIsTerminal ? '70%' : '50%';
   const rightBottomSize = rightBottomIsTerminal ? '30%' : '50%';
@@ -74,19 +74,21 @@ function writeLayout(targetDir, commands) {
 function mustRun(command, args, hint, options = {}) {
   const result = run(command, args, options);
   if (!result.ok) {
+    if (String(result.error || '').toLowerCase().includes('enoent')) {
+      throw new ZvibeError(ERRORS.ZELLIJ_MISSING, '未检测到 zellij', '请安装 zellij 或改用 --backend ghostty');
+    }
     throw new ZvibeError(ERRORS.RUN_FAILED, `${command} 命令失败: ${args.join(' ')}`, hint || '请检查 zellij 状态后重试', result.stderr || result.stdout);
   }
   return result;
 }
 
 function applyPaneFrames() {
-  run('zellij', ['options', '--pane-frames', 'false'], { capture: true });
+  run('zellij', ['options', '--pane-frames', 'true'], { capture: true });
 }
 
 function launch({ targetDir, commands, freshSession = false, sessionTag = '' }) {
   preflight();
-  applyPaneFrames();
-  const name = `zvibe-${sessionName(targetDir, sessionTag)}`;
+  const name = sessionName(targetDir, sessionTag);
   const layoutFile = writeLayout(targetDir, commands);
 
   try {
@@ -99,6 +101,7 @@ function launch({ targetDir, commands, freshSession = false, sessionTag = '' }) 
       // Some zellij setups keep focus on current tab after creating a new tab.
       // Move focus to make the new zvibe tab immediately visible.
       run('zellij', ['action', 'go-to-next-tab'], { capture: true });
+      applyPaneFrames();
       return;
     }
 
@@ -133,16 +136,27 @@ function healthcheck() {
 function normalizeSessionInput(name) {
   const raw = String(name || '').trim();
   if (!raw) return '';
-  return raw.startsWith('zvibe-') ? raw : `zvibe-${raw}`;
+  return raw;
 }
 
 function isValidSessionName(name) {
   return /^[a-zA-Z0-9_-]+$/.test(name);
 }
 
+function filterZvibeSessions(output) {
+  const legacyPattern = /^zvibe-/;
+  const currentPattern = /-(codex|claude|opencode|code|terminal)-[a-z]{2}[0-9]{2}$/;
+  return String(output || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && (legacyPattern.test(line) || currentPattern.test(line)));
+}
+
 function listSessions() {
-  preflight();
   const result = run('zellij', ['list-sessions', '--no-formatting', '--short'], { capture: true });
+  if (String(result.error || '').toLowerCase().includes('enoent')) {
+    throw new ZvibeError(ERRORS.ZELLIJ_MISSING, '未检测到 zellij', '请安装 zellij 或改用 --backend ghostty');
+  }
   if (!result.ok) {
     const combined = `${result.stdout || ''}\n${result.stderr || ''}`.toLowerCase();
     // zellij exits with code 1 when there are no active sessions.
@@ -153,14 +167,10 @@ function listSessions() {
   }
   // Also check stderr for output (some versions of zellij output to stderr even on success)
   const output = result.stdout || result.stderr || '';
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line && line.startsWith('zvibe-'));
+  return filterZvibeSessions(output);
 }
 
 function killSession(name) {
-  preflight();
   const resolved = normalizeSessionInput(name);
   if (!resolved) {
     throw new ZvibeError(ERRORS.RUN_FAILED, '缺少会话名', '用法: zvibe session kill <name>');
@@ -170,6 +180,9 @@ function killSession(name) {
   }
 
   const deleteResult = run('zellij', ['delete-session', '--force', resolved], { capture: true });
+  if (String(deleteResult.error || '').toLowerCase().includes('enoent')) {
+    throw new ZvibeError(ERRORS.ZELLIJ_MISSING, '未检测到 zellij', '请安装 zellij 或改用 --backend ghostty');
+  }
   if (!deleteResult.ok) {
     throw new ZvibeError(ERRORS.RUN_FAILED, `删除会话失败: ${resolved}`, '请先执行 zvibe session list 确认名称', deleteResult.stderr || deleteResult.stdout);
   }
@@ -177,7 +190,6 @@ function killSession(name) {
 }
 
 function attachSession(name) {
-  preflight();
   const resolved = normalizeSessionInput(name);
   if (!resolved) {
     throw new ZvibeError(ERRORS.RUN_FAILED, '缺少会话名', '用法: zvibe session attach <name>');
@@ -192,6 +204,9 @@ function attachSession(name) {
   }
 
   const result = run('zellij', ['attach', resolved], { capture: false });
+  if (String(result.error || '').toLowerCase().includes('enoent')) {
+    throw new ZvibeError(ERRORS.ZELLIJ_MISSING, '未检测到 zellij', '请安装 zellij 或改用 --backend ghostty');
+  }
   if (!result.ok) {
     throw new ZvibeError(ERRORS.RUN_FAILED, `attach 失败: ${resolved}`, '请检查 zellij 状态后重试', result.stderr || result.stdout);
   }
@@ -207,5 +222,6 @@ module.exports = {
   listSessions,
   killSession,
   attachSession,
-  normalizeSessionInput
+  normalizeSessionInput,
+  filterZvibeSessions
 };

@@ -71,6 +71,11 @@ zvibe setup --no-repair
 zvibe setup --yes
 ```
 
+`setup` is a 3-phase flow:
+- Phase 1: plugin/dependency auto-install (brew/formula/cask + plugin configs)
+- Phase 2: interactive, ordered per-agent confirmation/install (`codex` -> `claude` -> `opencode`)
+- Phase 3: config wizard (`DefaultAgent`, `AgentMode` layout, etc.)
+
 ### Config / 配置
 
 ```bash
@@ -90,9 +95,11 @@ zvibe update
 zvibe session list
 zvibe session attach <name>
 zvibe session kill <name>
+zvibe session kill all
 zvibe session -l
 zvibe session -a <name>
 zvibe session -k <name>
+zvibe session -k all
 ```
 
 ## Global Flags / 全局参数
@@ -180,18 +187,25 @@ Expect / 预期:
 - Metrics include CPU/GPU/MEM/NET in/out + model/token/context/cost (if source available)
 - Colors change by threshold and trend
 
+If some icons are missing (common in `Terminal.app` without Nerd Font), set icon style manually:
+
+```bash
+export ZVIBE_ICON_SET=ascii   # or: unicode / nerd / auto
+```
+
 ### 6) Packaging / 打包
 
 ```bash
-npm run verify:bin
+npm run verify:all
 npm pack
 ```
 
-`zvibe update` now performs a full update and verifies setup automation coverage:
+`zvibe update` now performs a full update for already-installed tooling:
 - brew update/upgrade/cleanup
-- required formulas/casks/tools auto-install checks
+- update installed formulas/casks/plugins only (no auto-install in update)
+- update only agents you selected in `managedAgents`
 - plugin config regeneration
-- missing-item validation for setup dependencies
+- missing-item validation (report only)
 
 ## Development / 开发
 
@@ -199,8 +213,11 @@ npm pack
 git clone https://github.com/Zanetach/zvibe.git
 cd zvibe
 node src/cli.js --help
-npm run verify:bin
+npm run verify:all
 ```
+
+Architecture and stability notes:
+- [docs/architecture-and-stability.md](docs/architecture-and-stability.md)
 
 ## License / 许可证
 

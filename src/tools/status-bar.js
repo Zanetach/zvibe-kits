@@ -6,14 +6,15 @@ const { execSync } = require('child_process');
 
 const TICK_MS = 1000;
 const RESCAN_EVERY = 3;
-const PING_RESCAN_EVERY = 3;
+const PING_RESCAN_EVERY = 1;
 const BOOTSTRAP_FAST_TICKS = 6;
 const CPU_BARS = '▁▂▃▄▅▆▇█';
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const RESET = '\x1b[0m';
 const ICON_VALUE_GAP = '  ';
 const FIELD_GAP = '   ';
-const ICONS = {
+const EDGE_PADDING = '  ';
+const NERD_ICONS = {
   cpu: '󰍛',
   gpu: '󰢮',
   mem: '󰘚',
@@ -23,19 +24,54 @@ const ICONS = {
   tok: '󰏗',
   ctx: '󰆼',
   cost: '󰇭',
+  uptime: '⏱',
+  load: 'LA',
+  disk: '󰋊',
+  battery: '🔋',
+  date: '🗓',
   weather: '󰖙',
   quote: '󰃧'
 };
+const UNICODE_ICONS = {
+  cpu: 'CPU',
+  gpu: 'GPU',
+  mem: 'MEM',
+  net: 'NET',
+  ping: 'PING',
+  model: 'MODEL',
+  tok: 'TOK',
+  ctx: 'CTX',
+  cost: '$',
+  uptime: 'UP',
+  load: 'LA',
+  disk: 'DISK',
+  battery: 'BAT',
+  date: 'DATE',
+  weather: 'WTH',
+  quote: 'Q'
+};
+
+function resolveIcons() {
+  const forced = String(process.env.ZVIBE_ICON_SET || '').trim().toLowerCase();
+  if (forced === 'nerd') return NERD_ICONS;
+  if (forced === 'unicode' || forced === 'ascii') return UNICODE_ICONS;
+  const terminalProgram = String(process.env.TERM_PROGRAM || '').trim();
+  if (terminalProgram === 'Apple_Terminal') return UNICODE_ICONS;
+  return NERD_ICONS;
+}
+const ICONS = resolveIcons();
 
 let tick = 0;
 let cpuHistory = [];
+let gpuHistory = [];
+let memHistory = [];
 let prevCpu = readCpuSnapshot();
 let prevNet = readNetworkBytes();
 let prevAt = Date.now();
 let usageState = { model: null, input: null, output: null, total: null, context: null, cost: null };
 let gpuState = { model: null, util: 0, raw: null, source: 'fallback' };
 let prevTokenSnapshot = { input: null, output: null, total: null };
-let extraState = { load1: null, diskUsed: null, battery: null, charging: null };
+let extraState = { load1: null, diskUsed: null, diskTotalBytes: null, diskFreeBytes: null, battery: null, charging: null };
 let pingState = { ms: null };
 let pingCursor = 0;
 
@@ -80,13 +116,6 @@ function colorByTokenDelta(delta, text) {
   if (!Number.isFinite(delta)) return dim(text);
   if (delta > 0) return color(text, 91, 179, 255);
   return dim(text);
-}
-
-function colorByCost(value, text) {
-  if (!Number.isFinite(value)) return dim(text);
-  if (value < 0.2) return color(text, 97, 191, 103);
-  if (value < 1) return color(text, 230, 190, 64);
-  return color(text, 229, 78, 78);
 }
 
 function readCpuSnapshot() {
@@ -147,6 +176,32 @@ function formatRate(bytesPerSecond) {
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)}${units[idx]}`;
 }
 
+function formatBytesCompact(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '--';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  const text = value >= 100 ? value.toFixed(0) : value.toFixed(1);
+  return `${text}${units[idx]}`;
+}
+
+function formatDiskBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '--';
+  const units = ['B', 'K', 'M', 'G', 'TB', 'PB'];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  const text = value >= 100 ? value.toFixed(0) : value.toFixed(1);
+  return `${text}${units[idx]}`;
+}
+
 function formatCompactNumber(value) {
   if (!Number.isFinite(value)) return '--';
   const abs = Math.abs(value);
@@ -154,13 +209,6 @@ function formatCompactNumber(value) {
   if (abs >= 1e6) return `${(value / 1e6).toFixed(1)}m`;
   if (abs >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
   return String(Math.round(value));
-}
-
-function formatTps(value) {
-  if (!Number.isFinite(value) || value < 0) return '--';
-  if (value >= 100) return value.toFixed(0);
-  if (value >= 10) return value.toFixed(1);
-  return value.toFixed(2);
 }
 
 function formatPercent(v) {
@@ -203,6 +251,35 @@ function visibleLength(text) {
   return String(text || '').replace(ANSI_RE, '').length;
 }
 
+function padVisible(text, width) {
+  const value = String(text || '');
+  const len = visibleLength(value);
+  if (len >= width) return value;
+  return value + ' '.repeat(width - len);
+}
+
+function fillLineToWidth(text, width) {
+  const value = String(text || '');
+  const len = visibleLength(value);
+  if (len >= width) return value;
+  return `${value}${' '.repeat(width - len)}`;
+}
+
+function packFieldsByWidth(fields, maxWidth, gap = FIELD_GAP) {
+  if (!Array.isArray(fields) || fields.length === 0 || maxWidth <= 0) return '';
+  const out = [];
+  let used = 0;
+  const gapLen = visibleLength(gap);
+  for (const field of fields) {
+    const fieldLen = visibleLength(field);
+    const next = out.length === 0 ? fieldLen : (gapLen + fieldLen);
+    if (used + next > maxWidth) break;
+    out.push(field);
+    used += next;
+  }
+  return out.join(gap);
+}
+
 function layoutTwoColumns(left, right, max) {
   const sep = ' │ ';
   const sepLen = visibleLength(sep);
@@ -221,8 +298,8 @@ function segmentRatios(width) {
 }
 
 function layoutThreeColumns(left, middle, right, max) {
-  const sep = ' │ ';
-  const sepLen = visibleLength(sep) * 2;
+  const baseSep = ' │ ';
+  const sepLen = visibleLength(baseSep) * 2;
   const usable = Math.max(12, max - sepLen);
   const ratios = segmentRatios(max);
 
@@ -254,10 +331,51 @@ function layoutThreeColumns(left, middle, right, max) {
     bMiddle += fromLeft;
   }
 
+  // Reflow spare space: if a column's real content is shorter than its budget,
+  // donate the unused width to columns that still need more room (priority: right).
+  const leftLen = visibleLength(left);
+  const middleLen = visibleLength(middle);
+  const rightLen = visibleLength(right);
+
+  let spare = 0;
+  if (leftLen < bLeft) {
+    spare += bLeft - leftLen;
+    bLeft = leftLen;
+  }
+  if (middleLen < bMiddle) {
+    spare += bMiddle - middleLen;
+    bMiddle = middleLen;
+  }
+  if (rightLen < bRight) {
+    spare += bRight - rightLen;
+    bRight = rightLen;
+  }
+
+  const needs = {
+    right: Math.max(0, rightLen - bRight),
+    middle: Math.max(0, middleLen - bMiddle),
+    left: Math.max(0, leftLen - bLeft)
+  };
+
+  const grant = (key) => {
+    if (spare <= 0 || needs[key] <= 0) return;
+    const n = Math.min(spare, needs[key]);
+    if (key === 'right') bRight += n;
+    if (key === 'middle') bMiddle += n;
+    if (key === 'left') bLeft += n;
+    needs[key] -= n;
+    spare -= n;
+  };
+
+  grant('right');
+  grant('middle');
+  grant('left');
+  if (spare > 0) bRight += spare;
+
   const leftText = shorten(left, Math.max(6, bLeft));
   const middleText = shorten(middle, Math.max(4, bMiddle));
   const rightText = shorten(right, Math.max(6, bRight));
-  return `${leftText}${sep}${middleText}${sep}${rightText}`;
+  return `${leftText}${baseSep}${middleText}${baseSep}${rightText}`;
 }
 
 function findLatestFiles(pattern, limit = 8) {
@@ -536,7 +654,7 @@ function readGpsCoordinates() {
 }
 
 function readSystemExtras() {
-  const extras = { load1: null, diskUsed: null, battery: null, charging: null };
+  const extras = { load1: null, diskUsed: null, diskTotalBytes: null, diskFreeBytes: null, battery: null, charging: null };
   try {
     const load = os.loadavg()[0];
     if (Number.isFinite(load)) extras.load1 = load;
@@ -546,9 +664,13 @@ function readSystemExtras() {
     const out = execSync('df -k .', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     const line = out.split('\n').filter(Boolean)[1] || '';
     const parts = line.trim().split(/\s+/);
+    const totalKb = Number(parts[1] || '');
+    const freeKb = Number(parts[3] || '');
     const useStr = parts[4] || '';
     const use = Number(useStr.replace('%', ''));
     if (Number.isFinite(use)) extras.diskUsed = use;
+    if (Number.isFinite(totalKb)) extras.diskTotalBytes = totalKb * 1024;
+    if (Number.isFinite(freeKb)) extras.diskFreeBytes = freeKb * 1024;
   } catch {}
 
   try {
@@ -604,17 +726,6 @@ function formatUptimeCompact(seconds) {
   return `${m}m`;
 }
 
-function formatEtaCompact(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return '--';
-  const s = Math.floor(seconds);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  const mm = m % 60;
-  return `${h}h${String(mm).padStart(2, '0')}m`;
-}
-
 function formatDateLite(date = new Date()) {
   const mm = String(date.getMonth() + 1).padStart(2, '0');
   const dd = String(date.getDate()).padStart(2, '0');
@@ -623,6 +734,13 @@ function formatDateLite(date = new Date()) {
   const ss = String(date.getSeconds()).padStart(2, '0');
   const week = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
   return `${mm}-${dd} ${hh}:${mi}:${ss} ${week}`;
+}
+
+function formatDateCompact(date = new Date()) {
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mi = String(date.getMinutes()).padStart(2, '0');
+  const week = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
+  return `${week} ${hh}:${mi}`;
 }
 
 function safeUptimeSeconds() {
@@ -682,6 +800,7 @@ function render() {
   const elapsed = Math.max(0.2, (now - prevAt) / 1000);
   prevAt = now;
   const max = process.stdout.columns || 120;
+  const fieldGap = max >= 230 ? '      ' : (max >= 180 ? '    ' : FIELD_GAP);
 
   const cpu = readCpuPercent();
   cpuHistory.push(cpu);
@@ -695,6 +814,10 @@ function render() {
   const uptime = safeUptimeSeconds();
 
   const gpuPct = gpuState.util == null ? 0 : gpuState.util;
+  gpuHistory.push(gpuPct);
+  if (gpuHistory.length > 12) gpuHistory = gpuHistory.slice(-12);
+  memHistory.push(memUsed);
+  if (memHistory.length > 12) memHistory = memHistory.slice(-12);
   const cpuText = colorByPercent(cpu, formatPercent(cpu));
   const gpuText = colorByPercent(gpuPct, `${gpuPct}%`);
   const memText = colorByPercent(memUsed, formatPercent(memUsed));
@@ -711,9 +834,6 @@ function render() {
   const deltaTotal = Number.isFinite(usageState.total) && Number.isFinite(prevTokenSnapshot.total)
     ? usageState.total - prevTokenSnapshot.total
     : NaN;
-  const deltaInPerSec = Number.isFinite(deltaIn) ? Math.max(0, deltaIn / elapsed) : NaN;
-  const deltaOutPerSec = Number.isFinite(deltaOut) ? Math.max(0, deltaOut / elapsed) : NaN;
-  const deltaTotalPerSec = Number.isFinite(deltaTotal) ? Math.max(0, deltaTotal / elapsed) : NaN;
   if (Number.isFinite(usageState.input)) prevTokenSnapshot.input = usageState.input;
   if (Number.isFinite(usageState.output)) prevTokenSnapshot.output = usageState.output;
   if (Number.isFinite(usageState.total)) prevTokenSnapshot.total = usageState.total;
@@ -722,53 +842,51 @@ function render() {
   const tokOutText = usageState.output == null ? dim('--') : colorByTokenDelta(deltaOut, formatCompactNumber(usageState.output));
   const tokTotalText = usageState.total == null ? dim('--') : colorByTokenDelta(deltaTotal, formatCompactNumber(usageState.total));
   const ctxValue = usageState.context == null ? dim('--') : color(formatCompactNumber(usageState.context), 176, 132, 255);
-  const costValue = usageState.cost == null ? dim('--') : colorByCost(usageState.cost, `$${usageState.cost.toFixed(4)}`);
-  const tpsInText = Number.isFinite(deltaInPerSec) ? colorByTokenDelta(deltaIn, formatTps(deltaInPerSec)) : dim('--');
-  const tpsOutText = Number.isFinite(deltaOutPerSec) ? colorByTokenDelta(deltaOut, formatTps(deltaOutPerSec)) : dim('--');
-  const tpsTotalText = Number.isFinite(deltaTotalPerSec) ? colorByTokenDelta(deltaTotal, formatTps(deltaTotalPerSec)) : dim('--');
-  const ctxRemaining = (Number.isFinite(usageState.context) && Number.isFinite(usageState.total))
-    ? Math.max(0, usageState.context - usageState.total)
-    : NaN;
-  const etaText = (Number.isFinite(ctxRemaining) && Number.isFinite(deltaTotalPerSec) && deltaTotalPerSec > 0)
-    ? color(formatEtaCompact(ctxRemaining / deltaTotalPerSec), 196, 160, 255)
-    : dim('--');
   const loadValue = extraState.load1 == null ? dim('--') : colorByPercent(Math.min(100, (extraState.load1 / Math.max(1, os.cpus().length)) * 100), extraState.load1.toFixed(2));
-  const diskValue = extraState.diskUsed == null ? dim('--') : colorByPercent(extraState.diskUsed, `${extraState.diskUsed}%`);
+  const diskUsedPct = (Number.isFinite(extraState.diskTotalBytes) && Number.isFinite(extraState.diskFreeBytes) && extraState.diskTotalBytes > 0)
+    ? Math.max(0, Math.min(100, ((extraState.diskTotalBytes - extraState.diskFreeBytes) / extraState.diskTotalBytes) * 100))
+    : NaN;
+  const diskValue = Number.isFinite(extraState.diskTotalBytes)
+    ? colorByPercent(
+      diskUsedPct,
+      `${formatDiskBytes(extraState.diskTotalBytes)}/${formatDiskBytes(extraState.diskFreeBytes)}`
+    )
+    : dim('--');
   const battPct = extraState.battery == null ? '--' : `${extraState.battery}%`;
   const battText = extraState.battery == null
     ? dim('--')
     : colorByPercent(100 - extraState.battery, `${battPct}${extraState.charging === true ? '⚡' : ''}`);
 
   const noAgent = noAgentTelemetryMode();
-  const leftGpuField = `${ICONS.gpu}${ICON_VALUE_GAP}${gpuText}`;
   const leftNetField = noAgent
     ? `${ICONS.net}${ICON_VALUE_GAP}↓ ${netInText}${ICON_VALUE_GAP}${ICONS.ping}${ICON_VALUE_GAP}${pingText}`
-    : `${ICONS.net}${ICON_VALUE_GAP}↓ ${netInText}${ICON_VALUE_GAP}↑ ${netOutText}${ICON_VALUE_GAP}${ICONS.ping}${ICON_VALUE_GAP}${pingText}`;
+    : `${ICONS.ping}${ICON_VALUE_GAP}${pingText}${ICON_VALUE_GAP}${ICONS.net}${ICON_VALUE_GAP}↓ ${netInText}${ICON_VALUE_GAP}↑ ${netOutText}`;
   const leftFields = [
     `${ICONS.cpu}${ICON_VALUE_GAP}${cpuText}${ICON_VALUE_GAP}${color(sparkline(cpuHistory), 120, 175, 255)}`,
-    leftGpuField,
-    `${ICONS.mem}${ICON_VALUE_GAP}${memText}`,
+    `${ICONS.gpu}${ICON_VALUE_GAP}${gpuText}${ICON_VALUE_GAP}${color(sparkline(gpuHistory), 196, 160, 255)}`,
+    `${ICONS.mem}${ICON_VALUE_GAP}${memText}${ICON_VALUE_GAP}${color(sparkline(memHistory), 97, 191, 103)}`,
     leftNetField
   ];
-  const left = leftFields.join(FIELD_GAP);
+  const left = leftFields.join(fieldGap);
 
   const modelLabel = `${ICONS.model}${ICON_VALUE_GAP}${color(shorten(usageState.model || '--', 16), 120, 175, 255)}`;
-  const tokenLabel = `${ICONS.tok}${ICON_VALUE_GAP}I ${tokInText}${ICON_VALUE_GAP}O ${tokOutText}${ICON_VALUE_GAP}T ${tokTotalText}${ICON_VALUE_GAP}TPS ${tpsInText}/${tpsOutText}/${tpsTotalText}`;
-  const tokenLabelCompact = `${ICONS.tok}${ICON_VALUE_GAP}T ${tokTotalText}${ICON_VALUE_GAP}TPS ${tpsTotalText}`;
-  const ctxCostLabel = `${ICONS.ctx}${ICON_VALUE_GAP}${ctxValue}${ICON_VALUE_GAP}ETA ${etaText}${FIELD_GAP}${ICONS.cost}${ICON_VALUE_GAP}${costValue}`;
-  const ctxEtaLabel = `${ICONS.ctx}${ICON_VALUE_GAP}${ctxValue}${ICON_VALUE_GAP}ETA ${etaText}`;
-  const middleFull = [modelLabel, tokenLabel, ctxCostLabel].join(FIELD_GAP);
-  const middleCompact = [modelLabel, tokenLabelCompact, ctxEtaLabel].join(FIELD_GAP);
+  const tokenLabel = `${ICONS.tok}${ICON_VALUE_GAP}I ${tokInText}${ICON_VALUE_GAP}O ${tokOutText}${ICON_VALUE_GAP}T ${tokTotalText}`;
+  const tokenLabelCompact = `${ICONS.tok}${ICON_VALUE_GAP}T ${tokTotalText}`;
+  const ctxCostLabel = `${ICONS.ctx}${ICON_VALUE_GAP}${ctxValue}`;
+  const ctxEtaLabel = `${ICONS.ctx}${ICON_VALUE_GAP}${ctxValue}`;
+  const middleFull = [modelLabel, ctxCostLabel, tokenLabel].join(fieldGap);
+  const middleCompact = [modelLabel, ctxEtaLabel, tokenLabelCompact].join(fieldGap);
   const middle = noAgent ? '' : (max < 145 ? middleCompact : middleFull);
 
-  const dateText = color(formatDateLite(new Date()), 174, 203, 255);
-  const dateField = `🗓${ICON_VALUE_GAP}${dateText}`;
+  const dateRaw = max < 145 ? formatDateCompact(new Date()) : formatDateLite(new Date());
+  const dateText = color(dateRaw, 174, 203, 255);
+  const dateField = `${ICONS.date}${ICON_VALUE_GAP}${dateText}`;
   const rightFields = [
-    `⏱${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
-    `LA${ICON_VALUE_GAP}${loadValue}`,
-    `💽${ICON_VALUE_GAP}${diskValue}`,
-    `🔋${ICON_VALUE_GAP}${battText}`,
-    dateField
+    `${ICONS.disk}${ICON_VALUE_GAP}${diskValue}`,
+    dateField,
+    `${ICONS.battery}${ICON_VALUE_GAP}${battText}`,
+    `${ICONS.uptime}${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
+    `${ICONS.load}${ICON_VALUE_GAP}${loadValue}`
   ];
   const rightCompactFields = [
     dateField
@@ -776,7 +894,7 @@ function render() {
   const rightMinimalFields = [
     dateField
   ];
-  const right = (max < 115 ? rightMinimalFields : (max < 145 ? rightCompactFields : rightFields)).join(FIELD_GAP);
+  const right = (max < 115 ? rightMinimalFields : (max < 145 ? rightCompactFields : rightFields)).join(fieldGap);
 
   if (!process.stdout.isTTY) {
     if (noAgent) process.stdout.write(`${left} | ${right}\n`);
@@ -786,14 +904,47 @@ function render() {
 
   let line;
   if (noAgent) {
-    const sep = ' │ ';
-    const tail = `${sep}${dateField}`;
-    const available = Math.max(20, max - visibleLength(tail));
-    line = `${shorten(left, available)}${tail}`;
+    const criticalFields = [
+      `${ICONS.cpu}${ICON_VALUE_GAP}${cpuText}`,
+      `${ICONS.gpu}${ICON_VALUE_GAP}${gpuText}`,
+      `${ICONS.mem}${ICON_VALUE_GAP}${memText}`,
+      `${ICONS.disk}${ICON_VALUE_GAP}${diskValue}`,
+      `${ICONS.net}${ICON_VALUE_GAP}↓ ${netInText}`,
+      `${ICONS.ping}${ICON_VALUE_GAP}${pingText}`
+    ];
+    const criticalCompactFields = [
+      `${ICONS.cpu}${ICON_VALUE_GAP}${Math.round(cpu)}%`,
+      `${ICONS.gpu}${ICON_VALUE_GAP}${gpuPct}%`,
+      `${ICONS.mem}${ICON_VALUE_GAP}${Math.round(memUsed)}%`,
+      `${ICONS.disk}${ICON_VALUE_GAP}${Number.isFinite(extraState.diskTotalBytes) ? `${formatDiskBytes(extraState.diskTotalBytes)}/${formatDiskBytes(extraState.diskFreeBytes)}` : '--'}`,
+      `${ICONS.net}${ICON_VALUE_GAP}${formatRate(netInRate)}`,
+      `${ICONS.ping}${ICON_VALUE_GAP}${pingText}`
+    ];
+    const secondaryFields = [
+      `${ICONS.battery}${ICON_VALUE_GAP}${battText}`,
+      `${ICONS.uptime}${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
+      `${ICONS.load}${ICON_VALUE_GAP}${loadValue}`,
+      `${ICONS.date}${ICON_VALUE_GAP}${dateText}`
+    ];
+    const budget = Math.max(10, max - visibleLength(EDGE_PADDING));
+    const criticalFullLine = criticalFields.join(fieldGap);
+    const compactGap = '  ';
+    const criticalCompactLine = criticalCompactFields.join(compactGap);
+    if (visibleLength(criticalFullLine) <= budget) {
+      line = packFieldsByWidth(criticalFields.concat(secondaryFields), budget, fieldGap);
+    } else if (visibleLength(criticalCompactLine) <= budget) {
+      line = packFieldsByWidth(criticalCompactFields.concat(secondaryFields), budget, compactGap);
+    } else {
+      line = packFieldsByWidth(criticalCompactFields, budget, ' ');
+    }
+    if (!line) line = dateField;
   } else {
-    line = layoutThreeColumns(left, middle, right, max);
+    line = layoutThreeColumns(left, middle, right, Math.max(20, max - visibleLength(EDGE_PADDING)));
   }
-  process.stdout.write(`\x1b[2K\r${shorten(line, max)}`);
+  const contentWidth = Math.max(10, max - visibleLength(EDGE_PADDING));
+  const fitted = shorten(line, contentWidth);
+  const filled = fillLineToWidth(fitted, contentWidth);
+  process.stdout.write(`\x1b[2K\r${EDGE_PADDING}${filled}`);
 
   // Poll after painting so state appears immediately on startup.
   if (fastBoot || tick % RESCAN_EVERY === 1) {
@@ -816,5 +967,16 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
-render();
-setInterval(render, TICK_MS);
+if (require.main === module) {
+  render();
+  setInterval(render, TICK_MS);
+}
+
+module.exports = {
+  visibleLength,
+  shorten,
+  fillLineToWidth,
+  packFieldsByWidth,
+  segmentRatios,
+  layoutThreeColumns
+};

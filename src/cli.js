@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { Output } = require('./core/io');
-const { run, commandExists } = require('./core/process');
+const { run, commandExists, commandExistsMany } = require('./core/process');
 const { ZvibeError, ERRORS } = require('./core/errors');
 const { AGENTS, MODES } = require('./core/constants');
 const { loadConfig, saveConfig, defaultConfig, mergeWithPriority, validate, normalizeBackend } = require('./core/config');
@@ -158,14 +158,23 @@ async function askAgentChoice(label, fallback, output) {
   }
 }
 
-function isClaudeAvailable() {
-  return commandExists('claude') || commandExists('claude-code') || fs.existsSync('/Applications/Claude Code.app');
+function hasCommand(command, commandAvailability = null) {
+  if (commandAvailability && Object.prototype.hasOwnProperty.call(commandAvailability, command)) {
+    return !!commandAvailability[command];
+  }
+  return commandExists(command);
 }
 
-function isAgentAvailable(agent) {
-  if (agent === 'claude') return isClaudeAvailable();
-  if (agent === 'codex') return commandExists('codex');
-  if (agent === 'opencode') return commandExists('opencode');
+function isClaudeAvailable(commandAvailability = null) {
+  return hasCommand('claude', commandAvailability)
+    || hasCommand('claude-code', commandAvailability)
+    || fs.existsSync('/Applications/Claude Code.app');
+}
+
+function isAgentAvailable(agent, commandAvailability = null) {
+  if (agent === 'claude') return isClaudeAvailable(commandAvailability);
+  if (agent === 'codex') return hasCommand('codex', commandAvailability);
+  if (agent === 'opencode') return hasCommand('opencode', commandAvailability);
   return false;
 }
 
@@ -175,16 +184,16 @@ function normalizeManagedAgents(agents) {
   return Array.from(new Set(normalized));
 }
 
-function checkSetupState({ managedAgents = [] } = {}) {
+function checkSetupState({ managedAgents = [], commandAvailability = null } = {}) {
   const checks = [];
 
-  checks.push({ ok: commandExists('brew'), label: 'brew' });
+  checks.push({ ok: hasCommand('brew', commandAvailability), label: 'brew' });
 
   REQUIRED_FORMULAS.forEach(({ command }) => {
-    checks.push({ ok: commandExists(command), label: command });
+    checks.push({ ok: hasCommand(command, commandAvailability), label: command });
   });
 
-  checks.push({ ok: commandExists('keifu'), label: 'keifu' });
+  checks.push({ ok: hasCommand('keifu', commandAvailability), label: 'keifu' });
 
   REQUIRED_CASKS.forEach(({ appDir, cask }) => {
     checks.push({ ok: fs.existsSync(appDir), label: `${cask}.app`, detail: appDir });
@@ -197,7 +206,7 @@ function checkSetupState({ managedAgents = [] } = {}) {
   normalizeManagedAgents(managedAgents).forEach((agent) => {
     const spec = AGENT_INSTALLERS[agent];
     checks.push({
-      ok: isAgentAvailable(agent),
+      ok: isAgentAvailable(agent, commandAvailability),
       label: `agent:${agent}`,
       detail: spec ? spec.command : agent
     });
@@ -271,7 +280,7 @@ function selectBackend(requested, output) {
 }
 
 function renderUsage() {
-  return `${renderBanner()}Commands / 命令:\n  zvibe setup [--repair] [--no-repair] [--yes] Setup dependencies and config / 初始化依赖与配置\n  zvibe config wizard                       Interactive config wizard / 交互式配置向导\n  zvibe config get <key>                    Read config value / 读取配置项\n  zvibe config set <key> <value>            Write config value / 写入配置项\n  zvibe config validate                     Validate config file / 校验配置文件\n  zvibe config explain                      Explain effective config / 解释当前生效配置\n  zvibe status [--doctor] [--json]          Health check and diagnostics / 环境诊断\n  zvibe update                              Full update + setup verification / 全量更新并校验 setup 自动安装\n  zvibe session list                        List zvibe sessions / 列出会话\n  zvibe session attach <name>               Attach session / 连接到会话\n  zvibe session kill <name>                 Kill session / 删除会话\n  zvibe session -l | -a <name> | -k <name> Session shortcuts / 会话快捷参数\n\nRun / 启动:\n  zvibe\n  zvibe codex|claude|opencode|code|terminal\n  zvibe <dir> [codex|claude|opencode|code|terminal]\n  zvibe [codex|claude|opencode|code|terminal] <dir>\n  zvibe <agent> -p <agent args...>\n  zvibe <agent> -- <agent args...>\n\nGlobal Flags / 全局参数:\n  --backend zellij                Backend selection (zellij only) / 后端选择（当前仅 zellij）\n  --fresh-session                 Force rebuild if session exists / 会话存在时强制重建\n  --reuse-session                 Compatibility flag; attach-first by default / 兼容参数（当前默认优先 attach）\n  -p, --passthrough               Pass all following args to agent / 后续参数全部透传给 Agent\n  -t, --terminal                  Terminal-only session when used alone; add right terminal pane in explicit agent mode / 单独使用时进入纯终端模式；在显式 agent 模式下表示右侧增加 Terminal\n  --yes                           Non-interactive setup defaults / setup 使用默认值无交互执行\n  --json                          JSON output / 以 JSON 输出结果\n  --verbose                       Verbose diagnostics / 输出诊断细节\n`;
+  return `${renderBanner()}Commands / 命令:\n  zvibe setup [--repair] [--no-repair] [--yes] Setup dependencies and config / 初始化依赖与配置\n  zvibe config wizard                       Interactive config wizard / 交互式配置向导\n  zvibe config get <key>                    Read config value / 读取配置项\n  zvibe config set <key> <value>            Write config value / 写入配置项\n  zvibe config validate                     Validate config file / 校验配置文件\n  zvibe config explain                      Explain effective config / 解释当前生效配置\n  zvibe status [--doctor] [--json]          Health check and diagnostics / 环境诊断\n  zvibe update                              Update installed plugins + managed agents / 仅更新已安装插件与已管理 Agent\n  zvibe session list                        List zvibe sessions / 列出会话\n  zvibe session attach <name>               Attach session / 连接到会话\n  zvibe session kill <name|all>             Kill session / 删除会话（all 表示全部）\n  zvibe session -l | -a <name> | -k <name|all> Session shortcuts / 会话快捷参数\n\nRun / 启动:\n  zvibe\n  zvibe codex|claude|opencode|code|terminal\n  zvibe <dir> [codex|claude|opencode|code|terminal]\n  zvibe [codex|claude|opencode|code|terminal] <dir>\n  zvibe <agent> -p <agent args...>\n  zvibe <agent> -- <agent args...>\n\nGlobal Flags / 全局参数:\n  --backend zellij                Backend selection (zellij only) / 后端选择（当前仅 zellij）\n  --fresh-session                 Force rebuild if session exists / 会话存在时强制重建\n  --reuse-session                 Compatibility flag; attach-first by default / 兼容参数（当前默认优先 attach）\n  -p, --passthrough               Pass all following args to agent / 后续参数全部透传给 Agent\n  -t, --terminal                  Terminal-only session when used alone; add right terminal pane in explicit agent mode / 单独使用时进入纯终端模式；在显式 agent 模式下表示右侧增加 Terminal\n  --yes                           Non-interactive setup defaults / setup 使用默认值无交互执行\n  --json                          JSON output / 以 JSON 输出结果\n  --verbose                       Verbose diagnostics / 输出诊断细节\n`;
 }
 
 function renderBanner() {
@@ -571,24 +580,24 @@ async function chooseManagedAgents({ nonInteractive, existingManagedAgents, outp
     return detected;
   }
 
-  const hasExisting = normalizeManagedAgents(existingManagedAgents).length > 0;
-  const wantManage = await askYesNo('是否安装并管理 Agent（codex/claude/opencode）？', hasExisting || true);
-  if (!wantManage) {
-    output.info('已跳过 Agent 安装与升级管理');
-    return [];
-  }
-
-  const confirm = (await ask('继续将安装缺失 Agent。请输入 yes 或 y 继续：', '')).toLowerCase();
-  if (!['yes', 'y'].includes(confirm)) {
-    output.info('未输入 yes/y，已跳过 Agent 安装与升级管理');
-    return [];
-  }
-
+  const existing = normalizeManagedAgents(existingManagedAgents);
   const managed = [];
-  for (const agent of AGENTS) {
+  const total = AGENTS.length;
+  for (let i = 0; i < AGENTS.length; i += 1) {
+    const agent = AGENTS[i];
+    if (!output.json) process.stdout.write(`\n[Agent ${i + 1}/${total}] ${agent}\n`);
     const installed = isAgentAvailable(agent);
-    const choose = await askYesNo(`是否管理 ${agent}${installed ? '（已安装）' : '（未安装）'}？`, installed);
+    const defaultChoice = existing.includes(agent) || installed;
+    const choose = await askYesNo(`是否管理 ${agent}${installed ? '（已安装）' : '（未安装）'}？`, defaultChoice);
     if (!choose) continue;
+
+    if (!installed) {
+      const confirm = (await ask(`将安装 ${agent}。请输入 yes 或 y 确认安装：`, '')).toLowerCase();
+      if (!['yes', 'y'].includes(confirm)) {
+        output.info(`未确认安装 ${agent}，已跳过`);
+        continue;
+      }
+    }
 
     if (agent === 'codex') ensureCodex(output, { install: !installed });
     if (agent === 'claude') ensureClaude(output, { install: !installed });
@@ -616,7 +625,7 @@ async function cmdSetup(flags, output) {
   const existingConfig = loaded.config || defaultConfig();
   if (!output.json) {
     process.stdout.write(renderBanner());
-    process.stdout.write('== Step 1/2 检测安装 ==\n');
+    process.stdout.write('== Step 1/3 插件与依赖（自动化安装） ==\n');
   }
 
   if (!commandExists('brew')) {
@@ -647,6 +656,9 @@ async function cmdSetup(flags, output) {
     await setupGpuPowermetricsSudo(output);
   }
 
+  if (!output.json) {
+    process.stdout.write('\n== Step 2/3 Agent（交互安装，按序执行） ==\n');
+  }
   const managedAgents = await chooseManagedAgents({
     nonInteractive,
     existingManagedAgents: existingConfig.managedAgents,
@@ -658,7 +670,7 @@ async function cmdSetup(flags, output) {
   if (setupMissing.length === 0) output.ok('setup 自动化安装校验通过');
 
   if (!output.json) {
-    process.stdout.write('\n== Step 2/2 设置 ==\n');
+    process.stdout.write('\n== Step 3/3 Config（布局与默认 Agent 配置） ==\n');
   }
   const current = { ...defaultConfig(), ...existingConfig };
   let defaultAgent = current.defaultAgent;
@@ -720,7 +732,13 @@ async function cmdSetup(flags, output) {
   }
   output.ok(`初始化完成，配置已写入 ${file}`);
 
-  commandSummary({ ok: true, command: 'setup', repair: repairMode, configFile: file }, output);
+  commandSummary({
+    ok: true,
+    command: 'setup',
+    repair: repairMode,
+    managedAgents: cfg.managedAgents,
+    configFile: file
+  }, output);
 }
 
 function configGet(config, key) {
@@ -819,9 +837,11 @@ function cmdStatus(flags, output) {
   needMacOS();
   const { config, file, exists } = loadConfig({ strict: false });
   const managedAgents = normalizeManagedAgents(config.managedAgents);
+  const commandProbeList = ['brew', 'git', 'node', 'zellij', 'yazi', 'gum', 'keifu', 'osascript', 'codex', 'claude', 'claude-code', 'opencode'];
+  const commandAvailability = commandExistsMany(commandProbeList);
 
-  const envChecks = checkSetupState({ managedAgents })
-    .concat([statusItem(commandExists('osascript'), 'osascript')])
+  const envChecks = checkSetupState({ managedAgents, commandAvailability })
+    .concat([statusItem(hasCommand('osascript', commandAvailability), 'osascript')])
     .map((item) => statusItem(item.ok, item.label, item.detail));
 
   let configOk = true;
@@ -833,11 +853,11 @@ function cmdStatus(flags, output) {
     configError = error.message;
   }
 
-  const runChecks = [zellijBackend.healthcheck()].map((item) => ({
-    backend: item.backend,
-    ok: item.ok,
-    error: item.ok ? null : item.error.message
-  }));
+  const runChecks = [{
+    backend: 'zellij',
+    ok: !!commandAvailability.zellij,
+    error: commandAvailability.zellij ? null : 'zellij command missing'
+  }];
 
   if (!output.json) {
     output.info(`配置文件: ${file}`);
@@ -846,7 +866,7 @@ function cmdStatus(flags, output) {
     if (flags.doctor) {
       output.info('运行层诊断：');
       runChecks.forEach((c) => (c.ok ? output.ok(`${c.backend} 可用`) : output.warn(`${c.backend} 不可用: ${c.error}`)));
-      const doctorMissing = reportSetupState(output, checkSetupState({ managedAgents }));
+      const doctorMissing = reportSetupState(output, checkSetupState({ managedAgents, commandAvailability }));
       if (doctorMissing.length === 0) output.ok('setup 自动化安装项全部就绪');
       else output.warn(`setup 自动化安装项缺失 ${doctorMissing.length} 项`);
       output.info(`Agent 升级管理范围: ${managedAgents.length > 0 ? managedAgents.join(', ') : '未启用'}`);
@@ -870,44 +890,65 @@ function cmdUpdate(output) {
   const { config } = loadConfig({ strict: false });
   const managedAgents = normalizeManagedAgents(config.managedAgents);
 
-  output.info('正在执行全量更新：核心依赖 + 插件配置 + 按已管理 Agent 升级');
+  output.info('正在执行全量更新：仅更新已安装插件与已管理 Agent');
   run('brew', ['update']);
 
   REQUIRED_FORMULAS.forEach(({ command, formula }) => {
-    ensureCommandOrBrew(command, formula, output, { install: true });
+    if (!commandExists(command)) {
+      output.info(`跳过 ${formula} 升级（未安装）`);
+      return;
+    }
     brewUpgradeFormula(formula, output);
   });
-  brewTap('trasta298/tap');
-  ensureCommandOrBrew('keifu', 'trasta298/tap/keifu', output, { install: true });
-  brewUpgradeFormula('trasta298/tap/keifu', output);
+
+  if (commandExists('keifu')) {
+    brewTap('trasta298/tap');
+    brewUpgradeFormula('trasta298/tap/keifu', output);
+  } else {
+    output.info('跳过 keifu 升级（未安装）');
+  }
 
   REQUIRED_CASKS.forEach(({ appDir, cask }) => {
-    ensureCask(appDir, cask, output, { install: true });
+    if (!fs.existsSync(appDir)) {
+      output.info(`跳过 ${cask} 升级（未安装）`);
+      return;
+    }
     brewUpgradeCask(cask, output);
   });
 
   if (managedAgents.includes('opencode')) {
-    brewTap('anomalyco/tap');
-    ensureOpencode(output, { install: true });
-    brewUpgradeFormula('anomalyco/tap/opencode', output);
+    if (!commandExists('opencode')) {
+      output.info('跳过 opencode 升级（已管理但未安装）');
+    } else {
+      brewTap('anomalyco/tap');
+      brewUpgradeFormula('anomalyco/tap/opencode', output);
+    }
   } else {
     output.info('跳过 opencode 升级（未纳入 managedAgents）');
   }
 
   if (managedAgents.includes('codex')) {
-    ensureCodex(output, { install: true });
-    const codexUpgrade = run('npm', ['install', '-g', '@openai/codex@latest']);
-    if (!codexUpgrade.ok) {
-      throw new ZvibeError(ERRORS.RUN_FAILED, 'codex 升级失败', '请手动执行 npm install -g @openai/codex@latest');
+    if (!commandExists('codex')) {
+      output.info('跳过 codex 升级（已管理但未安装）');
+    } else {
+      const codexUpgrade = run('npm', ['install', '-g', '@openai/codex@latest']);
+      if (!codexUpgrade.ok) {
+        throw new ZvibeError(ERRORS.RUN_FAILED, 'codex 升级失败', '请手动执行 npm install -g @openai/codex@latest');
+      }
+      output.ok('codex 升级完成');
     }
-    output.ok('codex 升级完成');
   } else {
     output.info('跳过 codex 升级（未纳入 managedAgents）');
   }
 
   if (managedAgents.includes('claude')) {
-    ensureClaude(output, { install: true });
-    brewUpgradeCask('claude-code', output);
+    if (fs.existsSync('/Applications/Claude Code.app')) {
+      brewUpgradeCask('claude-code', output);
+    } else if (commandExists('claude') || commandExists('claude-code')) {
+      output.info('检测到 claude CLI，但非 cask 管理；已跳过 cask 升级');
+    } else {
+      output.info('跳过 claude 升级（已管理但未安装）');
+    }
   } else {
     output.info('跳过 claude 升级（未纳入 managedAgents）');
   }
@@ -916,10 +957,13 @@ function cmdUpdate(output) {
   ensurePluginConfigs(output, { overwrite: true });
 
   const checks = checkSetupState({ managedAgents });
-  reportSetupState(output, checks, { strict: true });
+  const missing = reportSetupState(output, checks, { strict: false });
+  if (missing.length > 0) {
+    output.warn(`更新后检测到缺失项 ${missing.length} 个（仅提示，不自动安装）`);
+  }
 
-  output.ok('全量更新完成，setup 自动化安装校验通过');
-  commandSummary({ ok: true, command: 'update', managedAgents }, output);
+  output.ok('全量更新完成');
+  commandSummary({ ok: true, command: 'update', managedAgents, missingCount: missing.length }, output);
 }
 
 function cmdSession(positional, output) {
@@ -942,6 +986,21 @@ function cmdSession(positional, output) {
   if (sub === 'kill') {
     const name = positional[2];
     if (!name) throw new ZvibeError(ERRORS.RUN_FAILED, '缺少会话名', '用法: zvibe session kill <name>');
+    if (String(name).toLowerCase() === 'all') {
+      const sessions = zellijBackend.listSessions();
+      if (sessions.length === 0) {
+        if (!output.json) output.info('当前没有可删除的 zvibe 会话');
+        commandSummary({ ok: true, command: 'session kill', sessions: [], count: 0 }, output);
+        return;
+      }
+      const killed = [];
+      sessions.forEach((session) => {
+        killed.push(zellijBackend.killSession(session));
+      });
+      if (!output.json) output.ok(`会话已删除 ${killed.length} 个`);
+      commandSummary({ ok: true, command: 'session kill', sessions: killed, count: killed.length }, output);
+      return;
+    }
     const killed = zellijBackend.killSession(name);
     output.ok(`会话已删除: ${killed}`);
     commandSummary({ ok: true, command: 'session kill', session: killed }, output);
@@ -956,7 +1015,7 @@ function cmdSession(positional, output) {
     return;
   }
 
-  throw new ZvibeError(ERRORS.RUN_FAILED, `未知 session 子命令: ${rawSub}`, '可用命令: zvibe session list | zvibe session -l | zvibe session attach <name> | zvibe session -a <name> | zvibe session kill <name> | zvibe session -k <name>');
+  throw new ZvibeError(ERRORS.RUN_FAILED, `未知 session 子命令: ${rawSub}`, '可用命令: zvibe session list | zvibe session -l | zvibe session attach <name> | zvibe session -a <name> | zvibe session kill <name|all> | zvibe session -k <name|all>');
 }
 
 function isUnsafeAutoGitInitTarget(targetDir) {
@@ -1048,20 +1107,39 @@ function stableLetters(seed, size = 2) {
   return out;
 }
 
-function modeCode(mode) {
-  if (mode === 'terminal') return '01';
-  if (mode === 'code') return '02';
-  if (mode === 'codex') return '03';
-  if (mode === 'claude') return '04';
-  if (mode === 'opencode') return '05';
-  return '99';
+function stableDigits(seed, size = 2) {
+  const numbers = '0123456789';
+  const input = String(seed || '');
+  let hash = 5381;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = ((hash << 5) + hash) + input.charCodeAt(i);
+    hash |= 0;
+  }
+  let out = '';
+  for (let i = 0; i < size; i += 1) {
+    const idx = Math.abs(hash + (i * 29)) % numbers.length;
+    out += numbers[idx];
+    hash = ((hash << 5) + hash) ^ (idx + 48);
+    hash |= 0;
+  }
+  return out;
+}
+
+function modeLabel(mode) {
+  if (mode === 'code') return 'code';
+  if (mode === 'terminal') return 'terminal';
+  if (mode === 'codex') return 'codex';
+  if (mode === 'claude') return 'claude';
+  if (mode === 'opencode') return 'opencode';
+  return 'agent';
 }
 
 function buildSessionTag({ targetDir, mode, codeMode, agentPair }) {
   const seed = codeMode
     ? `${targetDir}|${mode}|${agentPair[0]}|${agentPair[1]}`
     : `${targetDir}|${mode}`;
-  return `${modeCode(mode)}${stableLetters(seed, 2)}`;
+  const suffix = `${stableLetters(seed, 2)}${stableDigits(seed, 2)}`;
+  return `${modeLabel(mode)}-${suffix}`;
 }
 
 function cmdRun(positional, flags, output) {

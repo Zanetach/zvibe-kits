@@ -1,10 +1,13 @@
 {
   "name": "@zanetach/zvibe",
-  "version": "2.0.4",
+  "version": "2.0.12",
   "description": "zvibe - session-first multi-agent development workspace launcher (zellij backend)",
   "scripts": {
+    "verify:syntax": "bash scripts/verify-syntax.sh",
+    "verify:test": "node --test test/*.test.js",
     "verify:bin": "bash scripts/verify-bin.sh",
-    "prepack": "npm run verify:bin"
+    "verify:all": "npm run verify:syntax && npm run verify:test && npm run verify:bin",
+    "prepack": "npm run verify:all"
   },
   "bin": {
     "zvibe": "bin/zvibe"
