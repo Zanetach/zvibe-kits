@@ -10,6 +10,16 @@ const SPINNER = ['|', '/', '-', '\\'];
 const CPU_BARS = '▁▂▃▄▅▆▇█';
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const RESET = '\x1b[0m';
+const ICONS = {
+  cpu: '󰍛',
+  gpu: '󰢮',
+  mem: '󰘚',
+  net: '󰖩',
+  model: '󱚟',
+  tok: '󰏗',
+  ctx: '󰆼',
+  cost: '󰇭'
+};
 
 let spin = 0;
 let tick = 0;
@@ -480,11 +490,12 @@ function render() {
   const ctxValue = usageState.context == null ? dim('--') : color(usageState.context.toLocaleString(), 176, 132, 255);
   const costValue = usageState.cost == null ? dim('--') : colorByCost(usageState.cost, `$${usageState.cost.toFixed(4)}`);
 
-  const gpuLabel = `GPU ${gpuText} ${dim(shorten(gpuState.model || '', 10))}`.trim();
-  const left = `CPU ${cpuText} ${color(sparkline(cpuHistory), 120, 175, 255)}  ${gpuLabel}  MEM ${memText}  NET IN ${netInText} OUT ${netOutText}`;
-  const modelLabel = `MODEL ${color(shorten(usageState.model || '--', 20), 120, 175, 255)}`;
-  const tokenLabel = `TOK I ${tokInText} O ${tokOutText} T ${tokTotalText}`;
-  const ctxCostLabel = `CTX ${ctxValue} COST ${costValue}`;
+  const gpuModel = gpuState.model ? ` ${dim(shorten(gpuState.model, 10))}` : '';
+  const gpuLabel = `${ICONS.gpu} ${gpuText}${gpuModel}`;
+  const left = `${ICONS.cpu} ${cpuText} ${color(sparkline(cpuHistory), 120, 175, 255)}  ${gpuLabel}  ${ICONS.mem} ${memText}  ${ICONS.net} IN ${netInText} OUT ${netOutText}`;
+  const modelLabel = `${ICONS.model} ${color(shorten(usageState.model || '--', 20), 120, 175, 255)}`;
+  const tokenLabel = `${ICONS.tok} I ${tokInText} O ${tokOutText} T ${tokTotalText}`;
+  const ctxCostLabel = `${ICONS.ctx} ${ctxValue} ${ICONS.cost} ${costValue}`;
   const right = `${modelLabel}  ${tokenLabel}  ${ctxCostLabel}  ${SPINNER[spin]}`;
   const line = `${left}  |  ${right}`;
 
