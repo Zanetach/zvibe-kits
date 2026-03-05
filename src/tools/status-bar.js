@@ -181,6 +181,54 @@ function visibleLength(text) {
   return String(text || '').replace(ANSI_RE, '').length;
 }
 
+function segmentRatios(width) {
+  if (width >= 220) return [0.42, 0.36, 0.22];
+  if (width >= 170) return [0.45, 0.33, 0.22];
+  if (width >= 140) return [0.48, 0.30, 0.22];
+  if (width >= 115) return [0.52, 0.26, 0.22];
+  return [0.56, 0.20, 0.24];
+}
+
+function layoutThreeColumns(left, middle, right, max) {
+  const sep = ' │ ';
+  const sepLen = visibleLength(sep) * 2;
+  const usable = Math.max(12, max - sepLen);
+  const ratios = segmentRatios(max);
+
+  let bLeft = Math.floor(usable * ratios[0]);
+  let bMiddle = Math.floor(usable * ratios[1]);
+  let bRight = usable - bLeft - bMiddle;
+
+  const minLeft = max >= 120 ? 28 : 20;
+  const minMiddle = max >= 120 ? 18 : 10;
+  const minRight = max >= 120 ? 24 : 18;
+
+  if (bRight < minRight) {
+    const need = minRight - bRight;
+    const fromMiddle = Math.min(need, Math.max(0, bMiddle - minMiddle));
+    bMiddle -= fromMiddle;
+    bRight += fromMiddle;
+    const remain = need - fromMiddle;
+    if (remain > 0) {
+      const fromLeft = Math.min(remain, Math.max(0, bLeft - minLeft));
+      bLeft -= fromLeft;
+      bRight += fromLeft;
+    }
+  }
+
+  if (bMiddle < minMiddle) {
+    const need = minMiddle - bMiddle;
+    const fromLeft = Math.min(need, Math.max(0, bLeft - minLeft));
+    bLeft -= fromLeft;
+    bMiddle += fromLeft;
+  }
+
+  const leftText = shorten(left, Math.max(6, bLeft));
+  const middleText = shorten(middle, Math.max(4, bMiddle));
+  const rightText = shorten(right, Math.max(6, bRight));
+  return `${leftText}${sep}${middleText}${sep}${rightText}`;
+}
+
 function findLatestFiles(pattern, limit = 8) {
   const [base, ...rest] = pattern.split('/');
   const root = base === '~' ? os.homedir() : base;
@@ -564,12 +612,12 @@ function render() {
 
   const gpuModel = gpuState.model ? ` ${dim(shorten(gpuState.model, 10))}` : '';
   const gpuLabel = `${ICONS.gpu} ${gpuText}${gpuModel}`;
-  const left = `${ICONS.cpu}${cpuText} ${color(sparkline(cpuHistory), 120, 175, 255)}  ${gpuLabel}  ${ICONS.mem}${memText}  ${ICONS.net}↓${netInText} ↑${netOutText}`;
-  const modelLabel = `${ICONS.model}${color(shorten(usageState.model || '--', 14), 120, 175, 255)}`;
-  const tokenLabel = `${ICONS.tok}I${tokInText} O${tokOutText} T${tokTotalText}`;
-  const ctxCostLabel = `${ICONS.ctx}${ctxValue} ${ICONS.cost}${costValue}`;
+  const left = `${ICONS.cpu} ${cpuText} ${color(sparkline(cpuHistory), 120, 175, 255)}  ${gpuLabel}  ${ICONS.mem} ${memText}  ${ICONS.net} ↓${netInText} ↑${netOutText}`;
+  const modelLabel = `${ICONS.model} ${color(shorten(usageState.model || '--', 16), 120, 175, 255)}`;
+  const tokenLabel = `${ICONS.tok} I${tokInText} O${tokOutText} T${tokTotalText}`;
+  const ctxCostLabel = `${ICONS.ctx} ${ctxValue}  ${ICONS.cost} ${costValue}`;
   const middle = `${modelLabel}  ${tokenLabel}  ${ctxCostLabel}`;
-  const right = `⏱${formatUptimeCompact(uptime)} LA${loadValue} 💽${diskValue} 🔋${battText} GPU:${dim(gpuState.source === 'powermetrics' ? 'pm' : 'io')} ${SPINNER[spin]}`;
+  const right = `⏱ ${formatUptimeCompact(uptime)}  LA ${loadValue}  💽 ${diskValue}  🔋 ${battText}  GPU ${dim(gpuState.source === 'powermetrics' ? 'pm' : 'io')} ${SPINNER[spin]}`;
 
   if (!process.stdout.isTTY) {
     process.stdout.write(`${left} | ${middle} | ${right}\n`);
@@ -577,35 +625,7 @@ function render() {
   }
 
   const max = process.stdout.columns || 120;
-  const sep = '  |  ';
-  let leftPart = left;
-  let middlePart = middle;
-  const leftLen = visibleLength(leftPart);
-  const middleLen = visibleLength(middlePart);
-  const rightLen = visibleLength(right);
-
-  let line = '';
-  const fullLen = leftLen + visibleLength(sep) + middleLen + 1 + rightLen;
-  if (fullLen <= max) {
-    const base = `${leftPart}${sep}${middlePart}`;
-    const pad = Math.max(1, max - visibleLength(base) - rightLen);
-    line = `${base}${' '.repeat(pad)}${right}`;
-  } else {
-    const middleBudget = max - leftLen - rightLen - visibleLength(sep) - 1;
-    if (middleBudget >= 12) {
-      middlePart = shorten(middlePart, middleBudget);
-      const base = `${leftPart}${sep}${middlePart}`;
-      const pad = Math.max(1, max - visibleLength(base) - rightLen);
-      line = `${base}${' '.repeat(pad)}${right}`;
-    } else {
-      const leftBudget = max - rightLen - visibleLength(sep) - 1;
-      leftPart = shorten(leftPart, Math.max(12, leftBudget));
-      const base = `${leftPart}${sep}`;
-      const pad = Math.max(1, max - visibleLength(base) - rightLen);
-      line = `${base}${' '.repeat(pad)}${right}`;
-    }
-  }
-
+  const line = layoutThreeColumns(left, middle, right, max);
   process.stdout.write(`\x1b[2K\r${shorten(line, max)}`);
 }
 
