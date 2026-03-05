@@ -37,19 +37,19 @@ function paneKdl(targetDir, command, paneName, size = null) {
 }
 
 function buildLayout(targetDir, commands) {
-  const project = sessionName(targetDir);
-  const leftTop = paneKdl(targetDir, commands.leftTop, `${project}:files`);
-  const leftBottom = paneKdl(targetDir, commands.leftBottom, `${project}:commit`);
+  const panePrefix = 'zvibe';
+  const leftTop = paneKdl(targetDir, commands.leftTop, `${panePrefix}:file`);
+  const leftBottom = paneKdl(targetDir, commands.leftBottom, `${panePrefix}:commit`);
   const rightBottomIsTerminal = commands.rightBottom === 'true';
   const rightTopSize = rightBottomIsTerminal ? '70%' : '50%';
   const rightBottomSize = rightBottomIsTerminal ? '30%' : '50%';
-  const rightTop = paneKdl(targetDir, commands.rightTop, `${project}:agent`, rightTopSize);
-  const statusBar = paneKdl(targetDir, commands.statusBar || 'true', `${project}:status`, '3');
+  const rightTop = paneKdl(targetDir, commands.rightTop, `${panePrefix}:agent`, rightTopSize);
+  const statusBar = paneKdl(targetDir, commands.statusBar || 'true', `${panePrefix}:status`, '3');
 
   if (!commands.rightBottom) {
     return `layout {\n  pane split_direction="Horizontal" {\n    pane size="94%" split_direction="Vertical" {\n      pane size="45%" split_direction="Horizontal" {\n        ${leftTop}\n        ${leftBottom}\n      }\n      pane size="55%" {\n        ${rightTop}\n      }\n    }\n    ${statusBar}\n  }\n}\n`;
   }
-  const rightBottom = paneKdl(targetDir, commands.rightBottom, `${project}:${rightBottomIsTerminal ? 'terminal' : 'agent'}`, rightBottomSize);
+  const rightBottom = paneKdl(targetDir, commands.rightBottom, `${panePrefix}:${rightBottomIsTerminal ? 'terminal' : 'agent'}`, rightBottomSize);
   return `layout {\n  pane split_direction="Horizontal" {\n    pane size="94%" split_direction="Vertical" {\n      pane size="45%" split_direction="Horizontal" {\n        ${leftTop}\n        ${leftBottom}\n      }\n      pane size="55%" split_direction="Horizontal" {\n        ${rightTop}\n        ${rightBottom}\n      }\n    }\n    ${statusBar}\n  }\n}\n`;
 }
 
