@@ -15,7 +15,11 @@ final class LocationDelegate: NSObject, CLLocationManagerDelegate {
   func run(timeoutSeconds: TimeInterval = 2.0) -> String? {
     let status = manager.authorizationStatus
     if status == .notDetermined {
+      #if os(macOS)
+      manager.requestAlwaysAuthorization()
+      #else
       manager.requestWhenInUseAuthorization()
+      #endif
     }
     manager.requestLocation()
     _ = semaphore.wait(timeout: .now() + timeoutSeconds)
@@ -37,7 +41,7 @@ final class LocationDelegate: NSObject, CLLocationManagerDelegate {
 
   func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
     let status = manager.authorizationStatus
-    if status == .authorizedAlways || status == .authorizedWhenInUse {
+    if status == .authorizedAlways {
       manager.requestLocation()
     } else if status == .denied || status == .restricted {
       semaphore.signal()
