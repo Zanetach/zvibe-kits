@@ -595,7 +595,7 @@ function readWeather() {
   const safeCurl = (url, timeoutMs = 2600) => {
     const safeUrl = String(url || '').replace(/(["\\$`])/g, '\\$1');
     try {
-      return execSync(`curl -fsS --max-time 2 "${safeUrl}"`, {
+      return execSync(`curl -q --noproxy '*' -fsS --max-time 2 "${safeUrl}"`, {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: timeoutMs
@@ -690,7 +690,7 @@ function readWeather() {
 
   const getIpGeo = () => {
     try {
-      const out = execSync('curl -fsS --max-time 2 https://ipapi.co/json', {
+      const out = execSync("curl -q --noproxy '*' -fsS --max-time 2 https://ipapi.co/json", {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
         timeout: 2500
