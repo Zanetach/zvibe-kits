@@ -19,7 +19,7 @@ const ICONS = {
   gpu: '󰢮',
   mem: '󰘚',
   net: '󰖩',
-  ping: '󰖟',
+  ping: '📶',
   model: '󱚟',
   tok: '󰏗',
   ctx: '󰆼',
@@ -52,7 +52,8 @@ let usageState = { model: null, input: null, output: null, total: null, context:
 let gpuState = { model: null, util: 0, raw: null, source: 'fallback' };
 let prevTokenSnapshot = { input: null, output: null, total: null };
 let extraState = { load1: null, diskUsed: null, battery: null, charging: null };
-let weatherState = { text: '天气获取中', symbol: '☁️' };
+const weatherCacheFile = path.join(os.homedir(), '.cache', 'zvibe', 'weather.json');
+let weatherState = loadWeatherCache() || { text: '天气获取中', symbol: '☁️' };
 let pingState = { ms: null };
 let pingCursor = 0;
 
@@ -599,42 +600,98 @@ function readSystemExtras() {
 }
 
 function readWeather() {
+  const requestWttr = (query = '') => {
+    const target = query
+      ? `https://wttr.in/${query}?format=%l|%c|%C|%t&lang=zh-cn`
+      : 'https://wttr.in/?format=%l|%c|%C|%t&lang=zh-cn';
+    const safeUrl = target.replace(/(["\\$`])/g, '\\$1');
+    try {
+      const out = execSync(`curl -fsS --max-time 2 "${safeUrl}"`, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 2600
+      }).trim();
+      if (!out || !out.includes('|')) return null;
+      const [locRaw, symbolRaw, condRaw, tempRaw] = out.split('|');
+      const loc = String(locRaw || '').replace(/\s+/g, ' ').trim();
+      const symbol = String(symbolRaw || '').replace(/\s+/g, '').trim() || '☁️';
+      const cond = String(condRaw || '').replace(/\s+/g, ' ').trim();
+      const temp = String(tempRaw || '').replace(/\s+/g, ' ').trim();
+      const normalizeCond = (value) => String(value || '')
+        .replace(/partly cloudy/ig, '晴转多云')
+        .replace(/cloudy/ig, '多云')
+        .replace(/overcast/ig, '阴')
+        .replace(/sunny|clear/ig, '晴')
+        .replace(/rain/ig, '雨')
+        .replace(/snow/ig, '雪')
+        .trim();
+      const condZh = normalizeCond(cond);
+      const text = [condZh || cond || loc, temp].filter(Boolean).join(' ');
+      if (!text) return null;
+      return { text, symbol };
+    } catch {
+      return null;
+    }
+  };
+
+  const getIpGeo = () => {
+    try {
+      const out = execSync('curl -fsS --max-time 2 https://ipapi.co/json', {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 2500
+      });
+      const data = JSON.parse(out);
+      return {
+        city: String(data.city || '').trim(),
+        lat: Number(data.latitude),
+        lon: Number(data.longitude)
+      };
+    } catch {
+      return { city: '', lat: NaN, lon: NaN };
+    }
+  };
+
   const gps = readGpsCoordinates();
+  const ipGeo = getIpGeo();
   const location = String(process.env.ZVIBE_WEATHER_LOCATION || '').trim();
-  const encodedLocation = location ? encodeURIComponent(location) : '';
-  // Priority: explicit location > GPS coordinates > IP-based location.
-  const target = encodedLocation
-    ? `https://wttr.in/${encodedLocation}?format=%l|%c|%C|%t&lang=zh-cn`
-    : (gps
-      ? `https://wttr.in/${gps.lat},${gps.lon}?format=%l|%c|%C|%t&lang=zh-cn`
-      : 'https://wttr.in/?format=%l|%c|%C|%t&lang=zh-cn');
-  const safeUrl = target.replace(/(["\\$`])/g, '\\$1');
-  try {
-    const out = execSync(`curl -fsS --max-time 2 "${safeUrl}"`, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2500
-    }).trim();
-    if (!out) return { text: '天气获取中', symbol: '☁️' };
-    const [locRaw, symbolRaw, condRaw, tempRaw] = out.split('|');
-    const loc = String(locRaw || '').replace(/\s+/g, ' ').trim();
-    const symbol = String(symbolRaw || '').replace(/\s+/g, '').trim();
-    const cond = String(condRaw || '').replace(/\s+/g, ' ').trim();
-    const temp = String(tempRaw || '').replace(/\s+/g, ' ').trim();
-    const normalizeCond = (value) => String(value || '')
-      .replace(/partly cloudy/ig, '晴转多云')
-      .replace(/cloudy/ig, '多云')
-      .replace(/overcast/ig, '阴')
-      .replace(/sunny|clear/ig, '晴')
-      .replace(/rain/ig, '雨')
-      .replace(/snow/ig, '雪')
-      .trim();
-    const condZh = normalizeCond(cond);
-    const text = [condZh || cond || loc, temp].filter(Boolean).join(' ');
-    return { text: text || '天气获取中', symbol: symbol || '☁️' };
-  } catch {
-    return { text: '天气暂不可用', symbol: '☁️' };
+  const candidates = [];
+  if (location) candidates.push(encodeURIComponent(location));
+  if (gps && Number.isFinite(gps.lat) && Number.isFinite(gps.lon)) candidates.push(`${gps.lat},${gps.lon}`);
+  if (ipGeo.city) candidates.push(encodeURIComponent(ipGeo.city));
+  if (Number.isFinite(ipGeo.lat) && Number.isFinite(ipGeo.lon)) candidates.push(`${ipGeo.lat},${ipGeo.lon}`);
+  candidates.push('');
+
+  for (const candidate of candidates) {
+    const weather = requestWttr(candidate);
+    if (weather) {
+      saveWeatherCache(weather);
+      return weather;
+    }
   }
+  return null;
+}
+
+function loadWeatherCache() {
+  try {
+    const raw = fs.readFileSync(weatherCacheFile, 'utf8');
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== 'object') return null;
+    const text = String(obj.text || '').trim();
+    const symbol = String(obj.symbol || '').trim() || '☁️';
+    if (!text) return null;
+    return { text, symbol };
+  } catch {
+    return null;
+  }
+}
+
+function saveWeatherCache(state) {
+  try {
+    if (!state || !state.text) return;
+    fs.mkdirSync(path.dirname(weatherCacheFile), { recursive: true });
+    fs.writeFileSync(weatherCacheFile, `${JSON.stringify(state)}\n`, 'utf8');
+  } catch {}
 }
 
 function pingOne(host) {
@@ -756,7 +813,8 @@ function render() {
     extraState = readSystemExtras();
   }
   if (tick % WEATHER_RESCAN_EVERY === 1) {
-    weatherState = readWeather();
+    const nextWeather = readWeather();
+    if (nextWeather && nextWeather.text) weatherState = nextWeather;
   }
   if (tick % PING_RESCAN_EVERY === 1) {
     pingState = readPing();
