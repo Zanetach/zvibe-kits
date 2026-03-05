@@ -52,6 +52,14 @@ let prevTokenSnapshot = { input: null, output: null, total: null };
 let extraState = { load1: null, diskUsed: null, battery: null, charging: null };
 let weatherState = { text: null, symbol: null };
 
+function noAgentTelemetryMode() {
+  const explicit = String(process.env.ZVIBE_NO_AGENT || '').trim();
+  if (explicit === '1' || explicit.toLowerCase() === 'true') return true;
+  const primary = String(process.env.ZVIBE_PRIMARY_AGENT || '').trim();
+  const secondary = String(process.env.ZVIBE_SECONDARY_AGENT || '').trim();
+  return !primary && !secondary;
+}
+
 function supportsColor() {
   return process.stdout.isTTY && !process.env.NO_COLOR;
 }
@@ -452,8 +460,8 @@ function readGpuInfo() {
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 2500
     });
-    const m = out.match(/GPU(?:\\s+HW)?\\s+active\\s+residency\\s*:\\s*([\\d.]+)%/i)
-      || out.match(/GPU\\s+active\\s*:\\s*([\\d.]+)%/i);
+    const m = out.match(/GPU(?:\s+HW)?\s+active\s+residency\s*:\s*([\d.]+)%/i)
+      || out.match(/GPU\s+active\s*:\s*([\d.]+)%/i);
     if (m && m[1]) {
       const util = Number(m[1]);
       if (Number.isFinite(util)) {
@@ -471,7 +479,7 @@ function readGpuInfo() {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore']
       });
-      const m = sp.match(/Chipset Model:\\s*([^\\n]+)/);
+      const m = sp.match(/Chipset Model:\s*([^\n]+)/);
       if (m && m[1]) gpuState.model = m[1].trim();
     }
   } catch {}
@@ -482,7 +490,7 @@ function readGpuInfo() {
       stdio: ['ignore', 'pipe', 'ignore'],
       maxBuffer: 8 * 1024 * 1024
     });
-    const matches = [...raw.matchAll(/"accumulatedGPUTime"\\s*=\\s*(\\d+)/g)];
+    const matches = [...raw.matchAll(/"accumulatedGPUTime"\s*=\s*(\d+)/g)];
     if (!matches.length) {
       if (gpuState.util == null) gpuState.util = 0;
       return gpuState;
@@ -503,6 +511,40 @@ function readGpuInfo() {
   } catch {}
 
   return gpuState;
+}
+
+function compileLocationHelper(binPath) {
+  const src = path.join(__dirname, 'location-helper.swift');
+  if (!fs.existsSync(src)) return false;
+  try {
+    execSync(`xcrun swiftc "${src}" -o "${binPath}"`, { stdio: ['ignore', 'ignore', 'ignore'], timeout: 8000 });
+    return fs.existsSync(binPath);
+  } catch {
+    return false;
+  }
+}
+
+function readGpsCoordinates() {
+  if (process.platform !== 'darwin') return null;
+  const bin = path.join(os.tmpdir(), 'zvibe-location-helper');
+  try {
+    if (!fs.existsSync(bin)) {
+      if (!compileLocationHelper(bin)) return null;
+    }
+    const out = execSync(`"${bin}"`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2500
+    }).trim();
+    const m = out.match(/^(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)$/);
+    if (!m) return null;
+    const lat = Number(m[1]);
+    const lon = Number(m[2]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return { lat, lon };
+  } catch {
+    return null;
+  }
 }
 
 function readSystemExtras() {
@@ -536,12 +578,15 @@ function readSystemExtras() {
 }
 
 function readWeather() {
+  const gps = readGpsCoordinates();
   const location = String(process.env.ZVIBE_WEATHER_LOCATION || '').trim();
   const encodedLocation = location ? encodeURIComponent(location) : '';
-  // Default mode uses current public location from wttr (IP-based).
+  // Priority: explicit location > GPS coordinates > IP-based location.
   const target = encodedLocation
     ? `https://wttr.in/${encodedLocation}?format=%l|%c|%C|%t`
-    : 'https://wttr.in/?format=%l|%c|%C|%t';
+    : (gps
+      ? `https://wttr.in/${gps.lat},${gps.lon}?format=%l|%c|%C|%t`
+      : 'https://wttr.in/?format=%l|%c|%C|%t');
   const safeUrl = target.replace(/(["\\$`])/g, '\\$1');
   try {
     const out = execSync(`curl -fsS --max-time 2 "${safeUrl}"`, {
@@ -594,6 +639,7 @@ function safeUptimeSeconds() {
 }
 
 function preferredAgents() {
+  if (noAgentTelemetryMode()) return [];
   const fromEnv = [process.env.ZVIBE_PRIMARY_AGENT, process.env.ZVIBE_SECONDARY_AGENT]
     .map((x) => String(x || '').trim())
     .filter(Boolean);
@@ -609,7 +655,11 @@ function resolveUsage() {
     opencode: readOpencodeUsage
   };
 
-  for (const agent of preferredAgents()) {
+  const preferred = preferredAgents();
+  if (preferred.length === 0) {
+    return { model: null, input: null, output: null, total: null, context: null, cost: null };
+  }
+  for (const agent of preferred) {
     const reader = readers[agent];
     if (!reader) continue;
     const usage = reader();
@@ -619,7 +669,7 @@ function resolveUsage() {
     }
   }
 
-  // ultimate fallback
+  // ultimate fallback for agent sessions
   return readCodexUsage() || readClaudeUsage() || readOpencodeUsage() || {
     model: null, input: null, output: null, total: null, context: null, cost: null
   };
@@ -724,6 +774,7 @@ function render() {
   ];
   const left = leftFields.join(FIELD_GAP);
 
+  const noAgent = noAgentTelemetryMode();
   const modelLabel = `${ICONS.model}${ICON_VALUE_GAP}${color(shorten(usageState.model || '--', 16), 120, 175, 255)}${ICON_VALUE_GAP}SIG ${sigText}`;
   const tokenLabel = `${ICONS.tok}${ICON_VALUE_GAP}I ${tokInText}${ICON_VALUE_GAP}O ${tokOutText}${ICON_VALUE_GAP}T ${tokTotalText}${ICON_VALUE_GAP}TPS ${tpsInText}/${tpsOutText}/${tpsTotalText}`;
   const tokenLabelCompact = `${ICONS.tok}${ICON_VALUE_GAP}T ${tokTotalText}${ICON_VALUE_GAP}TPS ${tpsTotalText}`;
@@ -731,7 +782,7 @@ function render() {
   const ctxEtaLabel = `${ICONS.ctx}${ICON_VALUE_GAP}${ctxValue}${ICON_VALUE_GAP}ETA ${etaText}`;
   const middleFull = [modelLabel, tokenLabel, ctxCostLabel].join(FIELD_GAP);
   const middleCompact = [modelLabel, tokenLabelCompact, ctxEtaLabel].join(FIELD_GAP);
-  const middle = max < 145 ? middleCompact : middleFull;
+  const middle = noAgent ? dim('terminal mode') : (max < 145 ? middleCompact : middleFull);
 
   const quoteIdx = Math.floor(tick / 8) % FUN_QUOTES.length;
   const quoteText = FUN_QUOTES[quoteIdx];
@@ -752,7 +803,7 @@ function render() {
   const rightCompactFields = [
     `⏱${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
     `LA${ICON_VALUE_GAP}${loadValue}`,
-    `${ICONS.weather}${ICON_VALUE_GAP}${weatherText}`,
+    `${weatherIcon}${ICON_VALUE_GAP}${weatherText}`,
     `${ICONS.hype}${ICON_VALUE_GAP}${hypeText}`,
     SPINNER[spin]
   ];

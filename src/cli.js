@@ -90,11 +90,12 @@ function buildAgentCommand(agent, passthroughArgs = []) {
   return withAgentEnv(agent, base);
 }
 
-function buildStatusBarCommand({ primaryAgent = '', secondaryAgent = '' } = {}) {
+function buildStatusBarCommand({ primaryAgent = '', secondaryAgent = '', noAgent = false } = {}) {
   const script = path.join(__dirname, 'tools', 'status-bar.js');
   const env = [
     `ZVIBE_PRIMARY_AGENT=${shellQuoteArg(primaryAgent || '')}`,
-    `ZVIBE_SECONDARY_AGENT=${shellQuoteArg(secondaryAgent || '')}`
+    `ZVIBE_SECONDARY_AGENT=${shellQuoteArg(secondaryAgent || '')}`,
+    `ZVIBE_NO_AGENT=${shellQuoteArg(noAgent ? '1' : '0')}`
   ].join(' ');
   return `${env} ${shellQuoteArg(process.execPath)} ${shellQuoteArg(script)}`;
 }
@@ -795,7 +796,8 @@ function cmdRun(positional, flags, output) {
     minimalTerminal: terminalOnly,
     statusBar: buildStatusBarCommand({
       primaryAgent: terminalOnly ? '' : (codeMode ? config.agentPair[0] : mode),
-      secondaryAgent: codeMode ? config.agentPair[1] : ''
+      secondaryAgent: codeMode ? config.agentPair[1] : '',
+      noAgent: terminalOnly
     })
   };
   const sessionTag = terminalOnly
