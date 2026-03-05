@@ -7,6 +7,7 @@ const { execSync } = require('child_process');
 const TICK_MS = 1000;
 const RESCAN_EVERY = 8;
 const WEATHER_RESCAN_EVERY = 300;
+const PING_RESCAN_EVERY = 8;
 const SPINNER = ['|', '/', '-', '\\'];
 const CPU_BARS = '▁▂▃▄▅▆▇█';
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -18,6 +19,7 @@ const ICONS = {
   gpu: '󰢮',
   mem: '󰘚',
   net: '󰖩',
+  ping: '󰖟',
   model: '󱚟',
   tok: '󰏗',
   ctx: '󰆼',
@@ -51,6 +53,8 @@ let gpuState = { model: null, util: 0, raw: null, source: 'fallback' };
 let prevTokenSnapshot = { input: null, output: null, total: null };
 let extraState = { load1: null, diskUsed: null, battery: null, charging: null };
 let weatherState = { text: null, symbol: null };
+let pingState = { ms: null };
+let pingCursor = 0;
 
 function noAgentTelemetryMode() {
   const explicit = String(process.env.ZVIBE_NO_AGENT || '').trim();
@@ -99,6 +103,14 @@ function colorByCost(value, text) {
   if (!Number.isFinite(value)) return dim(text);
   if (value < 0.2) return color(text, 97, 191, 103);
   if (value < 1) return color(text, 230, 190, 64);
+  return color(text, 229, 78, 78);
+}
+
+function colorByPing(value, text) {
+  if (!Number.isFinite(value)) return dim(text);
+  if (value < 40) return color(text, 97, 191, 103);
+  if (value < 90) return color(text, 230, 190, 64);
+  if (value < 180) return color(text, 236, 138, 69);
   return color(text, 229, 78, 78);
 }
 
@@ -607,6 +619,37 @@ function readWeather() {
   }
 }
 
+function pingOne(host) {
+  const safeHost = String(host || '').trim().replace(/(["\\$`])/g, '\\$1');
+  if (!safeHost) return null;
+  try {
+    const out = execSync(`ping -c 1 -W 1000 "${safeHost}" 2>/dev/null`, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1800
+    });
+    const m = out.match(/time[=<]([\d.]+)\s*ms/i);
+    if (!m || !m[1]) return { host, ms: null };
+    const ms = Number(m[1]);
+    return { host, ms: Number.isFinite(ms) ? ms : null };
+  } catch {
+    return { host, ms: null };
+  }
+}
+
+function readPing() {
+  const hostsRaw = String(process.env.ZVIBE_PING_HOSTS || 'www.google.com,www.youtube.com,1.1.1.1')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  if (!hostsRaw.length) return { ms: null };
+  const host = hostsRaw[pingCursor % hostsRaw.length];
+  pingCursor += 1;
+  const item = pingOne(host);
+  return { ms: item && Number.isFinite(item.ms) ? item.ms : null };
+}
+
 function formatUptimeCompact(seconds) {
   const s = Math.max(0, Math.floor(seconds));
   const h = Math.floor(s / 3600);
@@ -686,6 +729,9 @@ function render() {
   }
   if (tick % WEATHER_RESCAN_EVERY === 1) {
     weatherState = readWeather();
+  }
+  if (tick % PING_RESCAN_EVERY === 1) {
+    pingState = readPing();
   }
 
   const now = Date.now();
@@ -790,11 +836,13 @@ function render() {
   const weatherText = weatherState.text ? color(shorten(weatherState.text, 18), 110, 214, 250) : dim('--');
   const weatherIcon = weatherState.symbol || ICONS.weather;
   const hypeText = colorByPercent(activityScore, `${activityScore}%`);
+  const pingText = pingState.ms == null ? dim('--') : colorByPing(pingState.ms, `${Math.round(pingState.ms)}ms`);
   const rightFields = [
     `⏱${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
     `LA${ICON_VALUE_GAP}${loadValue}`,
     `💽${ICON_VALUE_GAP}${diskValue}`,
     `🔋${ICON_VALUE_GAP}${battText}`,
+    `${ICONS.ping}${ICON_VALUE_GAP}${pingText}`,
     `${weatherIcon}${ICON_VALUE_GAP}${weatherText}`,
     `${ICONS.hype}${ICON_VALUE_GAP}${hypeText}${ICON_VALUE_GAP}${color(sparkline(activityHistory), 255, 165, 80)}`,
     `${ICONS.quote}${ICON_VALUE_GAP}${quoteColor}`,
@@ -803,6 +851,7 @@ function render() {
   const rightCompactFields = [
     `⏱${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
     `LA${ICON_VALUE_GAP}${loadValue}`,
+    `${ICONS.ping}${ICON_VALUE_GAP}${pingText}`,
     `${weatherIcon}${ICON_VALUE_GAP}${weatherText}`,
     `${ICONS.hype}${ICON_VALUE_GAP}${hypeText}`,
     SPINNER[spin]
