@@ -230,7 +230,7 @@ function layoutTwoColumns(left, right, max) {
   const sep = ' │ ';
   const sepLen = visibleLength(sep);
   const usable = Math.max(8, max - sepLen);
-  const leftBudget = Math.max(8, Math.floor(usable * 0.58));
+  const leftBudget = Math.max(8, Math.floor(usable * 0.48));
   const rightBudget = Math.max(8, usable - leftBudget);
   return `${shorten(left, leftBudget)}${sep}${shorten(right, rightBudget)}`;
 }
@@ -810,32 +810,33 @@ function render() {
 
   const quoteIdx = Math.floor(tick / 8) % FUN_QUOTES.length;
   const quoteText = FUN_QUOTES[quoteIdx];
-  const quoteColor = color(shorten(quoteText, 16), 255, 203, 107);
+  const quoteColor = color(shorten(quoteText, 14), 255, 203, 107);
   const hypeText = colorByPercent(activityScore, `${activityScore}%`);
   const pingText = pingState.ms == null ? dim('--') : `${Math.round(pingState.ms)}ms`;
   const dateText = color(formatDateLite(new Date()), 174, 203, 255);
+  const dateField = `🗓${ICON_VALUE_GAP}${dateText}`;
   const rightFields = [
     `⏱${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
-    `🗓${ICON_VALUE_GAP}${dateText}`,
     `LA${ICON_VALUE_GAP}${loadValue}`,
     `💽${ICON_VALUE_GAP}${diskValue}`,
     `🔋${ICON_VALUE_GAP}${battText}`,
     `${ICONS.ping}${ICON_VALUE_GAP}${pingText}`,
     `${ICONS.hype}${ICON_VALUE_GAP}${hypeText}${ICON_VALUE_GAP}${color(sparkline(activityHistory), 255, 165, 80)}`,
     `${ICONS.quote}${ICON_VALUE_GAP}${quoteColor}`,
-    SPINNER[spin]
+    SPINNER[spin],
+    dateField
   ];
   const rightCompactFields = [
-    `🗓${ICON_VALUE_GAP}${dateText}`,
     `${ICONS.ping}${ICON_VALUE_GAP}${pingText}`,
     ...(noAgent ? [`${ICONS.quote}${ICON_VALUE_GAP}${quoteColor}`] : [`${ICONS.hype}${ICON_VALUE_GAP}${hypeText}`]),
-    SPINNER[spin]
+    SPINNER[spin],
+    dateField
   ];
   const rightMinimalFields = [
-    `🗓${ICON_VALUE_GAP}${color(formatDateLite(new Date()), 174, 203, 255)}`,
-    `${ICONS.quote}${ICON_VALUE_GAP}${quoteColor}`,
     `${ICONS.ping}${ICON_VALUE_GAP}${pingText}`,
-    SPINNER[spin]
+    `${ICONS.quote}${ICON_VALUE_GAP}${quoteColor}`,
+    SPINNER[spin],
+    dateField
   ];
   const right = (max < 115 ? rightMinimalFields : (max < 145 ? rightCompactFields : rightFields)).join(FIELD_GAP);
 
@@ -845,9 +846,19 @@ function render() {
     return;
   }
 
-  const line = noAgent
-    ? layoutTwoColumns(left, right, max)
-    : layoutThreeColumns(left, middle, right, max);
+  let line;
+  if (noAgent) {
+    const sep = ' │ ';
+    const tail = `${sep}${dateField}`;
+    const available = Math.max(20, max - visibleLength(tail));
+    const rightNoDate = (max < 115
+      ? [`${ICONS.ping}${ICON_VALUE_GAP}${pingText}`, `${ICONS.quote}${ICON_VALUE_GAP}${quoteColor}`, SPINNER[spin]]
+      : [`${ICONS.ping}${ICON_VALUE_GAP}${pingText}`, `${ICONS.quote}${ICON_VALUE_GAP}${quoteColor}`, SPINNER[spin]]
+    ).join(FIELD_GAP);
+    line = `${layoutTwoColumns(left, rightNoDate, available)}${tail}`;
+  } else {
+    line = layoutThreeColumns(left, middle, right, max);
+  }
   process.stdout.write(`\x1b[2K\r${shorten(line, max)}`);
 }
 
