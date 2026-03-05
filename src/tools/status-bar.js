@@ -52,7 +52,7 @@ let usageState = { model: null, input: null, output: null, total: null, context:
 let gpuState = { model: null, util: 0, raw: null, source: 'fallback' };
 let prevTokenSnapshot = { input: null, output: null, total: null };
 let extraState = { load1: null, diskUsed: null, battery: null, charging: null };
-let weatherState = { text: 'Weather loading', symbol: '☁️' };
+let weatherState = { text: '天气获取中', symbol: '☁️' };
 let pingState = { ms: null };
 let pingCursor = 0;
 
@@ -604,10 +604,10 @@ function readWeather() {
   const encodedLocation = location ? encodeURIComponent(location) : '';
   // Priority: explicit location > GPS coordinates > IP-based location.
   const target = encodedLocation
-    ? `https://wttr.in/${encodedLocation}?format=%l|%c|%C|%t`
+    ? `https://wttr.in/${encodedLocation}?format=%l|%c|%C|%t&lang=zh-cn`
     : (gps
-      ? `https://wttr.in/${gps.lat},${gps.lon}?format=%l|%c|%C|%t`
-      : 'https://wttr.in/?format=%l|%c|%C|%t');
+      ? `https://wttr.in/${gps.lat},${gps.lon}?format=%l|%c|%C|%t&lang=zh-cn`
+      : 'https://wttr.in/?format=%l|%c|%C|%t&lang=zh-cn');
   const safeUrl = target.replace(/(["\\$`])/g, '\\$1');
   try {
     const out = execSync(`curl -fsS --max-time 2 "${safeUrl}"`, {
@@ -615,16 +615,25 @@ function readWeather() {
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 2500
     }).trim();
-    if (!out) return { text: 'Weather pending', symbol: '☁️' };
+    if (!out) return { text: '天气获取中', symbol: '☁️' };
     const [locRaw, symbolRaw, condRaw, tempRaw] = out.split('|');
     const loc = String(locRaw || '').replace(/\s+/g, ' ').trim();
     const symbol = String(symbolRaw || '').replace(/\s+/g, '').trim();
     const cond = String(condRaw || '').replace(/\s+/g, ' ').trim();
     const temp = String(tempRaw || '').replace(/\s+/g, ' ').trim();
-    const text = [loc, cond, temp].filter(Boolean).join(' ');
-    return { text: text || 'Weather pending', symbol: symbol || '☁️' };
+    const normalizeCond = (value) => String(value || '')
+      .replace(/partly cloudy/ig, '晴转多云')
+      .replace(/cloudy/ig, '多云')
+      .replace(/overcast/ig, '阴')
+      .replace(/sunny|clear/ig, '晴')
+      .replace(/rain/ig, '雨')
+      .replace(/snow/ig, '雪')
+      .trim();
+    const condZh = normalizeCond(cond);
+    const text = [condZh || cond || loc, temp].filter(Boolean).join(' ');
+    return { text: text || '天气获取中', symbol: symbol || '☁️' };
   } catch {
-    return { text: 'Weather unavailable', symbol: '☁️' };
+    return { text: '天气暂不可用', symbol: '☁️' };
   }
 }
 
@@ -676,6 +685,16 @@ function formatEtaCompact(seconds) {
   const h = Math.floor(m / 60);
   const mm = m % 60;
   return `${h}h${String(mm).padStart(2, '0')}m`;
+}
+
+function formatDateLite(date = new Date()) {
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mi = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  const week = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
+  return `${mm}-${dd} ${hh}:${mi}:${ss} ${week}`;
 }
 
 function safeUptimeSeconds() {
@@ -844,13 +863,15 @@ function render() {
   const quoteIdx = Math.floor(tick / 8) % FUN_QUOTES.length;
   const quoteText = FUN_QUOTES[quoteIdx];
   const quoteColor = color(shorten(quoteText, 16), 255, 203, 107);
-  const weatherText = color(shorten(weatherState.text || 'Weather pending', 16), 110, 214, 250);
-  const weatherCompactText = color(shorten(weatherState.text || 'Weather', 8), 110, 214, 250);
+  const weatherText = color(shorten(weatherState.text || '天气获取中', 16), 110, 214, 250);
+  const weatherCompactText = color(shorten(weatherState.text || '天气', 8), 110, 214, 250);
   const weatherIcon = weatherState.symbol || '☁️';
   const hypeText = colorByPercent(activityScore, `${activityScore}%`);
   const pingText = pingState.ms == null ? dim('--') : colorByPing(pingState.ms, `${Math.round(pingState.ms)}ms`);
+  const dateText = color(formatDateLite(new Date()), 174, 203, 255);
   const rightFields = [
     `⏱${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
+    `🗓${ICON_VALUE_GAP}${dateText}`,
     `LA${ICON_VALUE_GAP}${loadValue}`,
     `💽${ICON_VALUE_GAP}${diskValue}`,
     `🔋${ICON_VALUE_GAP}${battText}`,
@@ -861,14 +882,14 @@ function render() {
     SPINNER[spin]
   ];
   const rightCompactFields = [
-    `⏱${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
-    `LA${ICON_VALUE_GAP}${loadValue}`,
+    `🗓${ICON_VALUE_GAP}${dateText}`,
     `${ICONS.ping}${ICON_VALUE_GAP}${pingText}`,
     `${weatherIcon}${ICON_VALUE_GAP}${weatherText}`,
     ...(noAgent ? [`${ICONS.quote}${ICON_VALUE_GAP}${quoteColor}`] : [`${ICONS.hype}${ICON_VALUE_GAP}${hypeText}`]),
     SPINNER[spin]
   ];
   const rightMinimalFields = [
+    `🗓${ICON_VALUE_GAP}${color(formatDateLite(new Date()), 174, 203, 255)}`,
     `${weatherIcon}${ICON_VALUE_GAP}${weatherCompactText}`,
     `${ICONS.quote}${ICON_VALUE_GAP}${quoteColor}`,
     `${ICONS.ping}${ICON_VALUE_GAP}${pingText}`,
