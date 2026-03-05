@@ -538,7 +538,10 @@ function readSystemExtras() {
 function readWeather() {
   const location = String(process.env.ZVIBE_WEATHER_LOCATION || '').trim();
   const encodedLocation = location ? encodeURIComponent(location) : '';
-  const target = encodedLocation ? `https://wttr.in/${encodedLocation}?format=%C+%t` : 'https://wttr.in/?format=%C+%t';
+  // Default mode uses current public location from wttr (IP-based).
+  const target = encodedLocation
+    ? `https://wttr.in/${encodedLocation}?format=%l:+%C+%t`
+    : 'https://wttr.in/?format=%l:+%C+%t';
   const safeUrl = target.replace(/(["\\$`])/g, '\\$1');
   try {
     const out = execSync(`curl -fsS --max-time 2 "${safeUrl}"`, {
