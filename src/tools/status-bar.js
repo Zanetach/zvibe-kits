@@ -10,6 +10,8 @@ const SPINNER = ['|', '/', '-', '\\'];
 const CPU_BARS = '▁▂▃▄▅▆▇█';
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const RESET = '\x1b[0m';
+const ICON_VALUE_GAP = '  ';
+const FIELD_GAP = '   ';
 const ICONS = {
   cpu: '󰍛',
   gpu: '󰢮',
@@ -610,14 +612,29 @@ function render() {
     ? dim('--')
     : colorByPercent(100 - extraState.battery, `${battPct}${extraState.charging === true ? '⚡' : ''}`);
 
-  const gpuModel = gpuState.model ? ` ${dim(shorten(gpuState.model, 10))}` : '';
-  const gpuLabel = `${ICONS.gpu} ${gpuText}${gpuModel}`;
-  const left = `${ICONS.cpu} ${cpuText} ${color(sparkline(cpuHistory), 120, 175, 255)}  ${gpuLabel}  ${ICONS.mem} ${memText}  ${ICONS.net} ↓${netInText} ↑${netOutText}`;
-  const modelLabel = `${ICONS.model} ${color(shorten(usageState.model || '--', 16), 120, 175, 255)}`;
-  const tokenLabel = `${ICONS.tok} I${tokInText} O${tokOutText} T${tokTotalText}`;
-  const ctxCostLabel = `${ICONS.ctx} ${ctxValue}  ${ICONS.cost} ${costValue}`;
-  const middle = `${modelLabel}  ${tokenLabel}  ${ctxCostLabel}`;
-  const right = `⏱ ${formatUptimeCompact(uptime)}  LA ${loadValue}  💽 ${diskValue}  🔋 ${battText}  GPU ${dim(gpuState.source === 'powermetrics' ? 'pm' : 'io')} ${SPINNER[spin]}`;
+  const gpuModel = gpuState.model ? `${ICON_VALUE_GAP}${dim(shorten(gpuState.model, 10))}` : '';
+  const leftFields = [
+    `${ICONS.cpu}${ICON_VALUE_GAP}${cpuText}${ICON_VALUE_GAP}${color(sparkline(cpuHistory), 120, 175, 255)}`,
+    `${ICONS.gpu}${ICON_VALUE_GAP}${gpuText}${gpuModel}`,
+    `${ICONS.mem}${ICON_VALUE_GAP}${memText}`,
+    `${ICONS.net}${ICON_VALUE_GAP}↓ ${netInText}${ICON_VALUE_GAP}↑ ${netOutText}`
+  ];
+  const left = leftFields.join(FIELD_GAP);
+
+  const modelLabel = `${ICONS.model}${ICON_VALUE_GAP}${color(shorten(usageState.model || '--', 16), 120, 175, 255)}`;
+  const tokenLabel = `${ICONS.tok}${ICON_VALUE_GAP}I ${tokInText}${ICON_VALUE_GAP}O ${tokOutText}${ICON_VALUE_GAP}T ${tokTotalText}`;
+  const ctxCostLabel = `${ICONS.ctx}${ICON_VALUE_GAP}${ctxValue}${FIELD_GAP}${ICONS.cost}${ICON_VALUE_GAP}${costValue}`;
+  const middle = [modelLabel, tokenLabel, ctxCostLabel].join(FIELD_GAP);
+
+  const rightFields = [
+    `⏱${ICON_VALUE_GAP}${formatUptimeCompact(uptime)}`,
+    `LA${ICON_VALUE_GAP}${loadValue}`,
+    `💽${ICON_VALUE_GAP}${diskValue}`,
+    `🔋${ICON_VALUE_GAP}${battText}`,
+    `GPU${ICON_VALUE_GAP}${dim(gpuState.source === 'powermetrics' ? 'pm' : 'io')}`,
+    SPINNER[spin]
+  ];
+  const right = rightFields.join(FIELD_GAP);
 
   if (!process.stdout.isTTY) {
     process.stdout.write(`${left} | ${middle} | ${right}\n`);
