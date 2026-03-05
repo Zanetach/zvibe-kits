@@ -10,6 +10,7 @@ const { AGENTS, MODES } = require('./core/constants');
 const { loadConfig, saveConfig, defaultConfig, mergeWithPriority, validate, normalizeBackend } = require('./core/config');
 const { agentCommand } = require('./core/agents');
 const zellijBackend = require('./backends/zellij');
+const { version } = require('../package.json');
 
 const REQUIRED_FORMULAS = [
   { command: 'git', formula: 'git' },
@@ -54,6 +55,7 @@ function parseArgv(argv) {
       break;
     }
     if (arg === '--help' || arg === '-h') flags.help = true;
+    else if (arg === '--version' || arg === '-v' || arg === '--v') flags.version = true;
     else if (arg === '--json') flags.json = true;
     else if (arg === '--verbose') flags.verbose = true;
     else if (arg === '--yes') flags.yes = true;
@@ -61,7 +63,8 @@ function parseArgv(argv) {
     else if (arg === '--no-repair') flags.noRepair = true;
     else if (arg === '--reuse-session') flags.reuseSession = true;
     else if (arg === '--fresh-session') flags.freshSession = true;
-    else if (arg === '-t' || arg === '--terminal') flags.rightTerminal = true;
+    else if (arg === '-T' || arg === '--terminal-only') flags.terminalOnly = true;
+    else if (arg === '-t' || arg === '--terminal' || arg === '--right-terminal') flags.rightTerminal = true;
     else if (arg.startsWith('--backend=')) flags.backend = arg.split('=')[1];
     else if (arg === '--backend') {
       flags.backend = argv[i + 1];
@@ -280,7 +283,7 @@ function selectBackend(requested, output) {
 }
 
 function renderUsage() {
-  return `${renderBanner()}Commands / 命令:\n  zvibe setup [--repair] [--no-repair] [--yes] Setup dependencies and config / 初始化依赖与配置\n  zvibe config wizard                       Interactive config wizard / 交互式配置向导\n  zvibe config get <key>                    Read config value / 读取配置项\n  zvibe config set <key> <value>            Write config value / 写入配置项\n  zvibe config validate                     Validate config file / 校验配置文件\n  zvibe config explain                      Explain effective config / 解释当前生效配置\n  zvibe status [--doctor] [--json]          Health check and diagnostics / 环境诊断\n  zvibe update                              Update installed plugins + managed agents / 仅更新已安装插件与已管理 Agent\n  zvibe session list                        List zvibe sessions / 列出会话\n  zvibe session attach <name>               Attach session / 连接到会话\n  zvibe session kill <name|all>             Kill session / 删除会话（all 表示全部）\n  zvibe session -l | -a <name> | -k <name|all> Session shortcuts / 会话快捷参数\n\nRun / 启动:\n  zvibe\n  zvibe codex|claude|opencode|code|terminal\n  zvibe <dir> [codex|claude|opencode|code|terminal]\n  zvibe [codex|claude|opencode|code|terminal] <dir>\n  zvibe <agent> -p <agent args...>\n  zvibe <agent> -- <agent args...>\n\nGlobal Flags / 全局参数:\n  --backend zellij                Backend selection (zellij only) / 后端选择（当前仅 zellij）\n  --fresh-session                 Force rebuild if session exists / 会话存在时强制重建\n  --reuse-session                 Compatibility flag; attach-first by default / 兼容参数（当前默认优先 attach）\n  -p, --passthrough               Pass all following args to agent / 后续参数全部透传给 Agent\n  -t, --terminal                  Terminal-only session when used alone; add right terminal pane in explicit agent mode / 单独使用时进入纯终端模式；在显式 agent 模式下表示右侧增加 Terminal\n  --yes                           Non-interactive setup defaults / setup 使用默认值无交互执行\n  --json                          JSON output / 以 JSON 输出结果\n  --verbose                       Verbose diagnostics / 输出诊断细节\n`;
+  return `${renderBanner()}Commands / 命令:\n  zvibe setup [--repair] [--no-repair] [--yes] Setup dependencies and config / 初始化依赖与配置\n  zvibe config wizard                       Interactive config wizard / 交互式配置向导\n  zvibe config get <key>                    Read config value / 读取配置项\n  zvibe config set <key> <value>            Write config value / 写入配置项\n  zvibe config validate                     Validate config file / 校验配置文件\n  zvibe config explain                      Explain effective config / 解释当前生效配置\n  zvibe status [--doctor] [--json]          Health check and diagnostics / 环境诊断\n  zvibe update                              Update installed plugins + managed agents / 仅更新已安装插件与已管理 Agent\n  zvibe session list                        List zvibe sessions / 列出会话\n  zvibe session attach <name>               Attach session / 连接到会话\n  zvibe session kill <name|all>             Kill session / 删除会话（all 表示全部）\n  zvibe session -l | -a <name> | -k <name|all> Session shortcuts / 会话快捷参数\n\nRun / 启动:\n  zvibe\n  zvibe codex|claude|opencode|code|terminal\n  zvibe <dir> [codex|claude|opencode|code|terminal]\n  zvibe [codex|claude|opencode|code|terminal] <dir>\n  zvibe <agent> -p <agent args...>\n  zvibe <agent> -- <agent args...>\n\nGlobal Flags / 全局参数:\n  --backend zellij                Backend selection (zellij only) / 后端选择（当前仅 zellij）\n  --fresh-session                 Force rebuild if session exists / 会话存在时强制重建\n  --reuse-session                 Compatibility flag; attach-first by default / 兼容参数（当前默认优先 attach）\n  -p, --passthrough               Pass all following args to agent / 后续参数全部透传给 Agent\n  -t, --terminal                  Add right terminal pane in agent/code modes / 在 agent/code 模式右侧增加 Terminal\n  -T, --terminal-only             Terminal-only session / 进入纯终端模式\n  --yes                           Non-interactive setup defaults / setup 使用默认值无交互执行\n  --json                          JSON output / 以 JSON 输出结果\n  --verbose                       Verbose diagnostics / 输出诊断细节\n  -v, --version, --v              Show CLI version / 显示版本号\n`;
 }
 
 function renderBanner() {
@@ -1145,13 +1148,8 @@ function buildSessionTag({ targetDir, mode, codeMode, agentPair }) {
 function cmdRun(positional, flags, output) {
   needMacOS();
   const { parsed, config } = resolveRunConfig(positional, flags);
-  const hasExplicitMode = !!parsed.mode;
   const terminalOnlyByMode = parsed.mode === 'terminal';
-  const terminalOnlyByFlag = !!flags.rightTerminal
-    && !hasExplicitMode
-    && (!flags.passthroughArgs || flags.passthroughArgs.length === 0)
-    && (!parsed.agentArgs || parsed.agentArgs.length === 0)
-    && (!flags.doubleDashArgs || flags.doubleDashArgs.length === 0);
+  const terminalOnlyByFlag = !!flags.terminalOnly;
   const terminalOnly = terminalOnlyByMode || terminalOnlyByFlag;
   const mode = terminalOnly ? 'terminal' : (parsed.mode || config.defaultAgent);
 
@@ -1204,6 +1202,10 @@ async function main() {
   try {
     if (flags.help || ['help', '--help', '-h'].includes(command)) {
       process.stdout.write(renderUsage());
+      return;
+    }
+    if (flags.version || ['version', '--version', '-v', '--v'].includes(command)) {
+      process.stdout.write(`${version}\n`);
       return;
     }
 
