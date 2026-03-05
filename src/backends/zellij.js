@@ -44,7 +44,7 @@ function buildLayout(targetDir, commands) {
   const rightTopSize = rightBottomIsTerminal ? '70%' : '50%';
   const rightBottomSize = rightBottomIsTerminal ? '30%' : '50%';
   const rightTop = paneKdl(targetDir, commands.rightTop, `${project}:agent`, rightTopSize);
-  const statusBar = paneKdl(targetDir, commands.statusBar || 'true', `${project}:status`, '6%');
+  const statusBar = paneKdl(targetDir, commands.statusBar || 'true', `${project}:status`, '1');
 
   if (!commands.rightBottom) {
     return `layout {\n  pane split_direction="Horizontal" {\n    pane size="94%" split_direction="Vertical" {\n      pane size="45%" split_direction="Horizontal" {\n        ${leftTop}\n        ${leftBottom}\n      }\n      pane size="55%" {\n        ${rightTop}\n      }\n    }\n    ${statusBar}\n  }\n}\n`;
@@ -78,29 +78,24 @@ function launch({ targetDir, commands, freshSession = false, sessionTag = '' }) 
 
   try {
     const inZellij = !!process.env.ZELLIJ;
+
+    if (inZellij) {
+      // Inside zellij: always open a new tab with the latest layout.
+      // This avoids attaching stale sessions that may not contain recent layout updates.
+      mustRun('zellij', ['action', 'new-tab', '--name', name, '--cwd', targetDir, '--layout', layoutFile], '请检查当前 zellij 会话状态', { capture: true });
+      applyPaneFrames();
+      return;
+    }
+
     const existing = listSessions();
     if (existing.includes(name)) {
-      if (freshSession && !inZellij) {
+      if (freshSession) {
         mustRun('zellij', ['delete-session', '--force', name], '请检查 zellij 会话状态', { capture: true });
       } else {
         const attachResult = run('zellij', ['attach', name], { capture: false });
         if (attachResult.ok) return;
-        if (!inZellij) {
-          mustRun('zellij', ['delete-session', '--force', name], '请检查 zellij 会话状态', { capture: true });
-        } else {
-          // When already inside zellij, attaching another session is often unsupported.
-          // Avoid spawning duplicate agent panes; keep the existing session as-is.
-          return;
-        }
+        mustRun('zellij', ['delete-session', '--force', name], '请检查 zellij 会话状态', { capture: true });
       }
-    }
-
-    if (inZellij) {
-      // IMPORTANT: when already inside zellij, never kill/delete sessions here.
-      // Otherwise we may terminate the current interactive session unexpectedly.
-      mustRun('zellij', ['action', 'new-tab', '--name', name, '--cwd', targetDir, '--layout', layoutFile], '请检查当前 zellij 会话状态', { capture: true });
-      applyPaneFrames();
-      return;
     }
 
     mustRun('zellij', ['-s', name, '-n', layoutFile], '请检查 zellij 配置后重试', { capture: false, cwd: targetDir });

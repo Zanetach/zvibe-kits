@@ -703,8 +703,8 @@ function cmdRun(positional, flags, output) {
     statusBar: buildStatusBarCommand()
   };
   const sessionTag = codeMode
-    ? `code-${config.agentPair[0]}-${config.agentPair[1]}`
-    : mode;
+    ? `code-${config.agentPair[0]}-${config.agentPair[1]}-sb1`
+    : `${mode}-sb1`;
 
   autoGitInit(targetDir, config, output);
   const backend = selectBackend(config.backend, output);
