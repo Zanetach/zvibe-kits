@@ -1,4 +1,4 @@
-# zvibe
+# Zvibe
 
 Zvibe is a session-first terminal workspace launcher for vibe coding on top of zellij.
 Zvibe 是一个基于 zellij 的会话优先终端工作台启动器。
