@@ -213,6 +213,49 @@ function applyClaudePermissionToggles(args = [], toggles = {}) {
   return next;
 }
 
+function getCodexModeToggles(args = []) {
+  const list = Array.isArray(args) ? args.map((item) => String(item)) : [];
+  return {
+    fullAuto: list.includes('--full-auto')
+  };
+}
+
+function applyCodexModeToggles(args = [], toggles = {}) {
+  const list = Array.isArray(args) ? args.map((item) => String(item)) : [];
+  const next = [];
+  for (let i = 0; i < list.length; i += 1) {
+    const token = list[i];
+    if (token === '--full-auto' || token === '--auto-edit') continue;
+    next.push(token);
+  }
+  if (toggles.fullAuto) next.push('--full-auto');
+  return next;
+}
+
+async function askAgentTogglesIfNeeded(agent, state, output, askedAgents) {
+  const chosen = String(agent || '').trim();
+  if (!AGENTS.includes(chosen)) return state;
+  if (askedAgents.has(chosen)) {
+    if (!output.json) output.info(`${chosen} 参数沿用已配置值`);
+    return state;
+  }
+  askedAgents.add(chosen);
+
+  if (chosen === 'codex') {
+    if (!output.json) process.stdout.write('\n[Codex 参数开关]\n');
+    state.codexFullAuto = await askYesNo('启用 Codex FullAuto（--full-auto）？', state.codexFullAuto);
+    return state;
+  }
+
+  if (chosen === 'claude') {
+    if (!output.json) process.stdout.write('\n[Claude 参数开关]\n');
+    state.claudeBypassPermissions = await askYesNo('启用 Claude BypassPermissions（--permission-mode bypassPermissions）？', state.claudeBypassPermissions);
+    state.claudeSkipPermissions = await askYesNo('启用 Claude SkipPermissions（--dangerously-skip-permissions）？', state.claudeSkipPermissions);
+  }
+
+  return state;
+}
+
 function buildStatusBarCommand({ primaryAgent = '', secondaryAgent = '', noAgent = false } = {}) {
   const script = path.join(__dirname, 'tools', 'status-bar.js');
   const env = [
@@ -862,6 +905,8 @@ async function cmdSetup(flags, output) {
   let defaultAgent = current.defaultAgent;
   let pairTop = current.agentPair[0];
   let pairBottom = current.agentPair[1];
+  const currentCodexToggles = getCodexModeToggles(current.codexArgs);
+  let codexFullAuto = currentCodexToggles.fullAuto;
   const currentClaudeToggles = getClaudePermissionToggles(current.claudeArgs);
   let claudeBypassPermissions = currentClaudeToggles.bypassPermissions;
   let claudeSkipPermissions = currentClaudeToggles.skipPermissions;
@@ -880,21 +925,46 @@ async function cmdSetup(flags, output) {
     output.info(`DefaultAgent 使用默认值: ${defaultAgent}`);
     output.info(`AgentMode 右上使用默认值: ${pairTop}`);
     output.info(`AgentMode 右下使用默认值: ${pairBottom}`);
+    output.info(`Codex 参数 - FullAuto: ${codexFullAuto ? '开启' : '关闭'}`);
     output.info(`Claude 参数 - BypassPermissions: ${claudeBypassPermissions ? '开启' : '关闭'}`);
     output.info(`Claude 参数 - SkipPermissions: ${claudeSkipPermissions ? '开启' : '关闭'}`);
   } else {
+    const askedAgents = new Set();
     process.stdout.write('\n[设置 1/3] Default Agent\n');
     defaultAgent = await askAgentChoice('DefaultAgent', defaultAgent, output);
+    await askAgentTogglesIfNeeded(defaultAgent, {
+      codexFullAuto,
+      claudeBypassPermissions,
+      claudeSkipPermissions
+    }, output, askedAgents).then((next) => {
+      codexFullAuto = next.codexFullAuto;
+      claudeBypassPermissions = next.claudeBypassPermissions;
+      claudeSkipPermissions = next.claudeSkipPermissions;
+    });
 
     process.stdout.write('\n[设置 2/3] AgentMode 右上\n');
     pairTop = await askAgentChoice('AgentMode 右上 Agent', pairTop, output);
+    await askAgentTogglesIfNeeded(pairTop, {
+      codexFullAuto,
+      claudeBypassPermissions,
+      claudeSkipPermissions
+    }, output, askedAgents).then((next) => {
+      codexFullAuto = next.codexFullAuto;
+      claudeBypassPermissions = next.claudeBypassPermissions;
+      claudeSkipPermissions = next.claudeSkipPermissions;
+    });
 
     process.stdout.write('\n[设置 3/3] AgentMode 右下\n');
     pairBottom = await askAgentChoice('AgentMode 右下 Agent', pairBottom, output);
-
-    process.stdout.write('\n[Claude 参数开关]\n');
-    claudeBypassPermissions = await askYesNo('启用 Claude BypassPermissions（--permission-mode bypassPermissions）？', claudeBypassPermissions);
-    claudeSkipPermissions = await askYesNo('启用 Claude SkipPermissions（--dangerously-skip-permissions）？', claudeSkipPermissions);
+    await askAgentTogglesIfNeeded(pairBottom, {
+      codexFullAuto,
+      claudeBypassPermissions,
+      claudeSkipPermissions
+    }, output, askedAgents).then((next) => {
+      codexFullAuto = next.codexFullAuto;
+      claudeBypassPermissions = next.claudeBypassPermissions;
+      claudeSkipPermissions = next.claudeSkipPermissions;
+    });
   }
 
   if (!AGENTS.includes(defaultAgent)) {
@@ -911,6 +981,7 @@ async function cmdSetup(flags, output) {
     ...current,
     defaultAgent,
     agentPair: flags.agentPair && flags.agentPair.length === 2 ? flags.agentPair : [pairTop, pairBottom],
+    codexArgs: applyCodexModeToggles(current.codexArgs, { fullAuto: codexFullAuto }),
     claudeArgs: applyClaudePermissionToggles(current.claudeArgs, {
       bypassPermissions: claudeBypassPermissions,
       skipPermissions: claudeSkipPermissions
@@ -926,6 +997,7 @@ async function cmdSetup(flags, output) {
     process.stdout.write('\n配置摘要：\n');
     process.stdout.write(`- defaultAgent: ${cfg.defaultAgent}\n`);
     process.stdout.write(`- AgentMode: [${cfg.agentPair[0]}, ${cfg.agentPair[1]}]\n`);
+    process.stdout.write(`- Codex FullAuto: ${codexFullAuto ? '开启' : '关闭'}\n`);
     process.stdout.write(`- Claude BypassPermissions: ${claudeBypassPermissions ? '开启' : '关闭'}\n`);
     process.stdout.write(`- Claude SkipPermissions: ${claudeSkipPermissions ? '开启' : '关闭'}\n`);
     process.stdout.write(`- managedAgents: [${cfg.managedAgents.join(', ')}]\n`);
@@ -1002,30 +1074,50 @@ async function cmdConfig(positional, output) {
     }
   }
 
-  if (!output.json) process.stdout.write('\n[设置 1/3] Default Agent\n');
-  const defaultAgent = await askAgentChoice('DefaultAgent', config.defaultAgent, output);
-
-  if (!output.json) process.stdout.write('\n[设置 2/3] AgentMode 右上\n');
-  const pairTop = await askAgentChoice('AgentMode 右上 Agent', config.agentPair[0], output);
-
-  if (!output.json) process.stdout.write('\n[设置 3/3] AgentMode 右下\n');
-  const pairBottom = await askAgentChoice('AgentMode 右下 Agent', config.agentPair[1], output);
+  const currentCodexToggles = getCodexModeToggles(config.codexArgs);
+  let codexFullAuto = currentCodexToggles.fullAuto;
   const currentClaudeToggles = getClaudePermissionToggles(config.claudeArgs);
   let claudeBypassPermissions = currentClaudeToggles.bypassPermissions;
   let claudeSkipPermissions = currentClaudeToggles.skipPermissions;
-  if (!output.json) process.stdout.write('\n[Claude 参数开关]\n');
+  const askedAgents = new Set();
+  const applyAgentToggles = async (agent) => {
+    await askAgentTogglesIfNeeded(agent, {
+      codexFullAuto,
+      claudeBypassPermissions,
+      claudeSkipPermissions
+    }, output, askedAgents).then((next) => {
+      codexFullAuto = next.codexFullAuto;
+      claudeBypassPermissions = next.claudeBypassPermissions;
+      claudeSkipPermissions = next.claudeSkipPermissions;
+    });
+  };
+
   if (process.stdin.isTTY) {
-    claudeBypassPermissions = await askYesNo('启用 Claude BypassPermissions（--permission-mode bypassPermissions）？', claudeBypassPermissions);
-    claudeSkipPermissions = await askYesNo('启用 Claude SkipPermissions（--dangerously-skip-permissions）？', claudeSkipPermissions);
+    if (!output.json) process.stdout.write('\n[设置 1/3] Default Agent\n');
+    const defaultAgent = await askAgentChoice('DefaultAgent', config.defaultAgent, output);
+    await applyAgentToggles(defaultAgent);
+
+    if (!output.json) process.stdout.write('\n[设置 2/3] AgentMode 右上\n');
+    const pairTop = await askAgentChoice('AgentMode 右上 Agent', config.agentPair[0], output);
+    await applyAgentToggles(pairTop);
+
+    if (!output.json) process.stdout.write('\n[设置 3/3] AgentMode 右下\n');
+    const pairBottom = await askAgentChoice('AgentMode 右下 Agent', config.agentPair[1], output);
+    await applyAgentToggles(pairBottom);
+
+    config.defaultAgent = defaultAgent;
+    config.agentPair = [pairTop, pairBottom];
   } else if (!output.json) {
+    output.info(`非交互模式，保持 Codex FullAuto: ${codexFullAuto ? '开启' : '关闭'}`);
     output.info(`非交互模式，保持 Claude BypassPermissions: ${claudeBypassPermissions ? '开启' : '关闭'}`);
     output.info(`非交互模式，保持 Claude SkipPermissions: ${claudeSkipPermissions ? '开启' : '关闭'}`);
   }
 
   const next = {
     ...config,
-    defaultAgent: defaultAgent || config.defaultAgent,
-    agentPair: [pairTop || config.agentPair[0], pairBottom || config.agentPair[1]],
+    defaultAgent: config.defaultAgent,
+    agentPair: [config.agentPair[0], config.agentPair[1]],
+    codexArgs: applyCodexModeToggles(config.codexArgs, { fullAuto: codexFullAuto }),
     claudeArgs: applyClaudePermissionToggles(config.claudeArgs, {
       bypassPermissions: claudeBypassPermissions,
       skipPermissions: claudeSkipPermissions
@@ -1041,6 +1133,7 @@ async function cmdConfig(positional, output) {
     process.stdout.write('\n配置摘要：\n');
     process.stdout.write(`- defaultAgent: ${next.defaultAgent}\n`);
     process.stdout.write(`- AgentMode: [${next.agentPair[0]}, ${next.agentPair[1]}]\n`);
+    process.stdout.write(`- Codex FullAuto: ${codexFullAuto ? '开启' : '关闭'}\n`);
     process.stdout.write(`- Claude BypassPermissions: ${claudeBypassPermissions ? '开启' : '关闭'}\n`);
     process.stdout.write(`- Claude SkipPermissions: ${claudeSkipPermissions ? '开启' : '关闭'}\n`);
   }
@@ -1103,24 +1196,41 @@ function cmdStatus(flags, output) {
   }, output);
 }
 
-function cmdUpdate(output) {
-  needMacOS();
-  if (!commandExists('brew')) throw new ZvibeError(ERRORS.COMMAND_MISSING, '未检测到 Homebrew');
-  const { config } = loadConfig({ strict: false });
+function cmdUpdate(output, deps = {}) {
+  const needMacOSFn = deps.needMacOS || needMacOS;
+  const commandExistsFn = deps.commandExists || commandExists;
+  const loadConfigFn = deps.loadConfig || loadConfig;
+  const runFn = deps.run || run;
+  const checkSetupStateFn = deps.checkSetupState || checkSetupState;
+  const reportSetupStateFn = deps.reportSetupState || reportSetupState;
+  const ensurePluginConfigsFn = deps.ensurePluginConfigs || ensurePluginConfigs;
+  const isClaudeAvailableFn = deps.isClaudeAvailable || isClaudeAvailable;
+  const getClaudeUpgradeInvocationsFn = deps.getClaudeUpgradeInvocations || getClaudeUpgradeInvocations;
+
+  needMacOSFn();
+  if (!commandExistsFn('brew')) throw new ZvibeError(ERRORS.COMMAND_MISSING, '未检测到 Homebrew');
+  const { config } = loadConfigFn({ strict: false });
   const managedAgents = normalizeManagedAgents(config.managedAgents);
 
   output.info('正在执行全量更新：仅更新已安装插件与已管理 Agent');
-  run('brew', ['update']);
+  const brewUpdate = runFn('brew', ['update'], { capture: true });
+  if (!brewUpdate.ok) {
+    throw new ZvibeError(
+      ERRORS.RUN_FAILED,
+      'brew update 失败',
+      (brewUpdate.stderr || brewUpdate.stdout || '').trim() || '请手动执行 brew update'
+    );
+  }
 
   REQUIRED_FORMULAS.forEach(({ command, formula }) => {
-    if (!commandExists(command)) {
+    if (!commandExistsFn(command)) {
       output.info(`跳过 ${formula} 升级（未安装）`);
       return;
     }
     brewUpgradeFormula(formula, output);
   });
 
-  if (commandExists('keifu')) {
+  if (commandExistsFn('keifu')) {
     brewTap('trasta298/tap');
     brewUpgradeFormula('trasta298/tap/keifu', output);
   } else {
@@ -1136,7 +1246,7 @@ function cmdUpdate(output) {
   });
 
   if (managedAgents.includes('opencode')) {
-    if (!commandExists('opencode')) {
+    if (!commandExistsFn('opencode')) {
       output.info('跳过 opencode 升级（已管理但未安装）');
     } else {
       brewTap('anomalyco/tap');
@@ -1147,12 +1257,19 @@ function cmdUpdate(output) {
   }
 
   if (managedAgents.includes('codex')) {
-    if (!commandExists('codex')) {
+    if (!commandExistsFn('codex')) {
       output.info('跳过 codex 升级（已管理但未安装）');
     } else {
-      const codexUpgrade = run('npm', ['install', '-g', '@openai/codex@latest']);
+      if (!commandExistsFn('npm')) {
+        throw new ZvibeError(ERRORS.COMMAND_MISSING, '缺少 npm，无法升级 codex', '请先安装 Node.js/npm');
+      }
+      const codexUpgrade = runFn('npm', ['install', '-g', '@openai/codex@latest'], { capture: true });
       if (!codexUpgrade.ok) {
-        throw new ZvibeError(ERRORS.RUN_FAILED, 'codex 升级失败', '请手动执行 npm install -g @openai/codex@latest');
+        throw new ZvibeError(
+          ERRORS.RUN_FAILED,
+          'codex 升级失败',
+          (codexUpgrade.stderr || codexUpgrade.stdout || '').trim() || '请手动执行 npm install -g @openai/codex@latest'
+        );
       }
       output.ok('codex 升级完成');
     }
@@ -1161,15 +1278,15 @@ function cmdUpdate(output) {
   }
 
   if (managedAgents.includes('claude')) {
-    if (!isClaudeAvailable()) {
+    if (!isClaudeAvailableFn()) {
       output.info('跳过 claude 升级（已管理但未安装）');
     } else {
-      const invocations = getClaudeUpgradeInvocations();
+      const invocations = getClaudeUpgradeInvocationsFn();
 
       let upgraded = false;
       let lastDetail = '';
       for (const [command, subcommand] of invocations) {
-        const result = run(command, [subcommand], { capture: true });
+        const result = runFn(command, [subcommand], { capture: true });
         if (result.ok) {
           output.ok(`claude 升级完成（${command} ${subcommand}）`);
           upgraded = true;
@@ -1191,11 +1308,18 @@ function cmdUpdate(output) {
     output.info('跳过 claude 升级（未纳入 managedAgents）');
   }
 
-  run('brew', ['cleanup']);
-  ensurePluginConfigs(output, { overwrite: true });
+  const brewCleanup = runFn('brew', ['cleanup'], { capture: true });
+  if (!brewCleanup.ok) {
+    throw new ZvibeError(
+      ERRORS.RUN_FAILED,
+      'brew cleanup 失败',
+      (brewCleanup.stderr || brewCleanup.stdout || '').trim() || '请手动执行 brew cleanup'
+    );
+  }
+  ensurePluginConfigsFn(output, { overwrite: true });
 
-  const checks = checkSetupState({ managedAgents });
-  const missing = reportSetupState(output, checks, { strict: false });
+  const checks = checkSetupStateFn({ managedAgents });
+  const missing = reportSetupStateFn(output, checks, { strict: false });
   if (missing.length > 0) {
     output.warn(`更新后检测到缺失项 ${missing.length} 个（仅提示，不自动安装）`);
   }
@@ -1496,6 +1620,9 @@ module.exports = {
   agentUnsetVars,
   configuredAgentArgs,
   parseArgList,
+  getCodexModeToggles,
+  applyCodexModeToggles,
   getClaudePermissionToggles,
-  applyClaudePermissionToggles
+  applyClaudePermissionToggles,
+  cmdUpdate
 };

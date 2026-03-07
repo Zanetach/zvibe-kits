@@ -13,11 +13,17 @@ class Output {
     this.json = !!options.json;
     this.verbose = !!options.verbose;
     this.events = [];
+    this.maxEvents = Number.isFinite(options.maxEvents) && options.maxEvents > 0
+      ? Math.floor(options.maxEvents)
+      : 500;
   }
 
   emit(level, message, data) {
     const event = { level, message, ...(data ? { data } : {}) };
     this.events.push(event);
+    if (this.events.length > this.maxEvents) {
+      this.events.splice(0, this.events.length - this.maxEvents);
+    }
     if (!this.json) {
       const prefix = formatPrefix(level);
       process.stdout.write(`${prefix} ${message}\n`);

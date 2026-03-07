@@ -8,6 +8,8 @@ const {
   agentUnsetVars,
   configuredAgentArgs,
   parseArgList,
+  getCodexModeToggles,
+  applyCodexModeToggles,
   getClaudePermissionToggles,
   applyClaudePermissionToggles
 } = require('../src/cli');
@@ -95,6 +97,21 @@ test('configuredAgentArgs merges global and per-agent args', () => {
 test('parseArgList supports csv and json array strings', () => {
   assert.deepEqual(parseArgList('--a,--b'), ['--a', '--b']);
   assert.deepEqual(parseArgList('["--x","--y"]'), ['--x', '--y']);
+});
+
+test('getCodexModeToggles detects full-auto mode', () => {
+  const toggles = getCodexModeToggles(['--model', 'gpt-5', '--full-auto']);
+  assert.deepEqual(toggles, { fullAuto: true });
+});
+
+test('applyCodexModeToggles enables full-auto and strips legacy codex modes', () => {
+  const next = applyCodexModeToggles(['--model', 'gpt-5', '--auto-edit'], { fullAuto: true });
+  assert.deepEqual(next, ['--model', 'gpt-5', '--full-auto']);
+});
+
+test('applyCodexModeToggles disables codex explicit modes when set to no', () => {
+  const next = applyCodexModeToggles(['--model', 'gpt-5', '--auto-edit', '--full-auto'], { fullAuto: false });
+  assert.deepEqual(next, ['--model', 'gpt-5']);
 });
 
 test('getClaudePermissionToggles detects bypass and skip flags', () => {

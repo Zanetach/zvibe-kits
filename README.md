@@ -166,8 +166,8 @@ zvibe update
   "defaultAgent": "codex",
   "agentPair": ["opencode", "codex"],
   "agentArgs": [],
-  "codexArgs": ["--dangerously-skip-permissions"],
-  "claudeArgs": [],
+  "codexArgs": [],
+  "claudeArgs": ["--dangerously-skip-permissions"],
   "opencodeArgs": [],
   "managedAgents": ["claude", "codex"],
   "backend": "zellij",
@@ -197,11 +197,11 @@ zvibe update
 ### Agent 参数配置示例
 
 ```bash
-# 给 codex 永久增加参数（逗号分隔）
-zvibe config set codexArgs --dangerously-skip-permissions
+# 给 claude 永久增加参数（逗号分隔）
+zvibe config set claudeArgs --dangerously-skip-permissions
 
 # 或用 JSON 数组形式（更适合多参数）
-zvibe config set codexArgs '["--dangerously-skip-permissions","--model","gpt-5"]'
+zvibe config set claudeArgs '["--dangerously-skip-permissions"]'
 ```
 
 ---

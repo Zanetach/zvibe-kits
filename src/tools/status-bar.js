@@ -2,11 +2,14 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, fork } = require('child_process');
 
 const TICK_MS = 1000;
 const RESCAN_EVERY = 3;
-const PING_RESCAN_EVERY = 1;
+const GPU_RESCAN_EVERY = 6;
+const EXTRAS_RESCAN_EVERY = 6;
+const NETWORK_RESCAN_EVERY = 2;
+const PING_RESCAN_EVERY = 3;
 const BOOTSTRAP_FAST_TICKS = 6;
 const CPU_BARS = '▁▂▃▄▅▆▇█';
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -67,13 +70,16 @@ let gpuHistory = [];
 let memHistory = [];
 let prevCpu = readCpuSnapshot();
 let prevNet = readNetworkBytes();
+let prevNetAt = Date.now();
 let prevAt = Date.now();
 let usageState = { model: null, input: null, output: null, total: null, context: null, cost: null };
 let gpuState = { model: null, util: 0, raw: null, source: 'fallback' };
 let prevTokenSnapshot = { input: null, output: null, total: null };
 let extraState = { load1: null, diskUsed: null, diskTotalBytes: null, diskFreeBytes: null, battery: null, charging: null };
 let pingState = { ms: null };
+let netRates = { inRate: 0, outRate: 0 };
 let pingCursor = 0;
+let samplerChild = null;
 
 function noAgentTelemetryMode() {
   const explicit = String(process.env.ZVIBE_NO_AGENT || '').trim();
@@ -807,10 +813,17 @@ function render() {
   if (cpuHistory.length > 12) cpuHistory = cpuHistory.slice(-12);
 
   const memUsed = ((os.totalmem() - os.freemem()) / os.totalmem()) * 100;
-  const netNow = readNetworkBytes();
-  const netInRate = Math.max(0, (netNow.inBytes - prevNet.inBytes) / elapsed);
-  const netOutRate = Math.max(0, (netNow.outBytes - prevNet.outBytes) / elapsed);
-  prevNet = netNow;
+  let netInRate = netRates.inRate;
+  let netOutRate = netRates.outRate;
+  if (!samplerChild && (fastBoot || tick % NETWORK_RESCAN_EVERY === 0)) {
+    const netNow = readNetworkBytes();
+    const netElapsed = Math.max(0.2, (now - prevNetAt) / 1000);
+    netInRate = Math.max(0, (netNow.inBytes - prevNet.inBytes) / netElapsed);
+    netOutRate = Math.max(0, (netNow.outBytes - prevNet.outBytes) / netElapsed);
+    prevNet = netNow;
+    prevNetAt = now;
+    netRates = { inRate: netInRate, outRate: netOutRate };
+  }
   const uptime = safeUptimeSeconds();
 
   const gpuPct = gpuState.util == null ? 0 : gpuState.util;
@@ -947,27 +960,123 @@ function render() {
   process.stdout.write(`\x1b[2K\r${EDGE_PADDING}${filled}`);
 
   // Poll after painting so state appears immediately on startup.
-  if (fastBoot || tick % RESCAN_EVERY === 1) {
-    usageState = resolveUsage();
-    gpuState = readGpuInfo();
-    extraState = readSystemExtras();
+  // When sampler process is enabled, render loop only consumes cached telemetry.
+  if (!samplerChild) {
+    if (fastBoot || tick % RESCAN_EVERY === 1) {
+      usageState = resolveUsage();
+    }
+    if (fastBoot || tick % GPU_RESCAN_EVERY === 0) {
+      gpuState = readGpuInfo();
+    }
+    if (fastBoot || tick % EXTRAS_RESCAN_EVERY === 0) {
+      extraState = readSystemExtras();
+    }
+    if (fastBoot || tick % PING_RESCAN_EVERY === 0) {
+      pingState = readPing();
+    }
   }
-  if (fastBoot || tick % PING_RESCAN_EVERY === 1) {
-    pingState = readPing();
+}
+
+function sendSamplerMetrics(payload) {
+  if (!process.send) return;
+  try {
+    process.send({ type: 'metrics', ...payload });
+  } catch {}
+}
+
+function runSamplerProcess() {
+  let localTick = 0;
+  let localPrevNet = readNetworkBytes();
+  let localPrevNetAt = Date.now();
+  let localRates = { inRate: 0, outRate: 0 };
+  let localUsage = { model: null, input: null, output: null, total: null, context: null, cost: null };
+  let localGpu = { model: null, util: 0, raw: null, source: 'fallback' };
+  let localExtras = { load1: null, diskUsed: null, diskTotalBytes: null, diskFreeBytes: null, battery: null, charging: null };
+  let localPing = { ms: null };
+
+  const sample = () => {
+    localTick += 1;
+    const fastBoot = localTick <= BOOTSTRAP_FAST_TICKS;
+    const now = Date.now();
+
+    if (fastBoot || localTick % NETWORK_RESCAN_EVERY === 0) {
+      const netNow = readNetworkBytes();
+      const netElapsed = Math.max(0.2, (now - localPrevNetAt) / 1000);
+      localRates = {
+        inRate: Math.max(0, (netNow.inBytes - localPrevNet.inBytes) / netElapsed),
+        outRate: Math.max(0, (netNow.outBytes - localPrevNet.outBytes) / netElapsed)
+      };
+      localPrevNet = netNow;
+      localPrevNetAt = now;
+    }
+    if (fastBoot || localTick % RESCAN_EVERY === 1) localUsage = resolveUsage();
+    if (fastBoot || localTick % GPU_RESCAN_EVERY === 0) localGpu = readGpuInfo();
+    if (fastBoot || localTick % EXTRAS_RESCAN_EVERY === 0) localExtras = readSystemExtras();
+    if (fastBoot || localTick % PING_RESCAN_EVERY === 0) localPing = readPing();
+
+    sendSamplerMetrics({
+      usageState: localUsage,
+      gpuState: localGpu,
+      extraState: localExtras,
+      pingState: localPing,
+      netRates: localRates
+    });
+  };
+
+  sample();
+  setInterval(sample, TICK_MS);
+}
+
+function startSamplerProcess() {
+  if (process.env.ZVIBE_DISABLE_STATUSBAR_SAMPLER === '1') return null;
+  try {
+    const child = fork(__filename, [], {
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      env: {
+        ...process.env,
+        ZVIBE_STATUSBAR_SAMPLER: '1',
+        ZVIBE_DISABLE_STATUSBAR_SAMPLER: '1'
+      }
+    });
+    child.on('message', (message) => {
+      if (!message || message.type !== 'metrics') return;
+      if (message.usageState) usageState = message.usageState;
+      if (message.gpuState) gpuState = message.gpuState;
+      if (message.extraState) extraState = message.extraState;
+      if (message.pingState) pingState = message.pingState;
+      if (message.netRates) netRates = message.netRates;
+    });
+    child.on('exit', () => {
+      samplerChild = null;
+    });
+    return child;
+  } catch {
+    return null;
   }
 }
 
 process.on('SIGINT', () => {
+  if (samplerChild) {
+    try { samplerChild.kill('SIGTERM'); } catch {}
+  }
   process.stdout.write('\n');
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
+  if (samplerChild) {
+    try { samplerChild.kill('SIGTERM'); } catch {}
+  }
   process.stdout.write('\n');
   process.exit(0);
 });
 
 if (require.main === module) {
+  if (process.env.ZVIBE_STATUSBAR_SAMPLER === '1') {
+    runSamplerProcess();
+    return;
+  }
+  samplerChild = startSamplerProcess();
   render();
   setInterval(render, TICK_MS);
 }
