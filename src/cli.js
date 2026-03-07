@@ -23,6 +23,7 @@ const REQUIRED_FORMULAS = [
 const REQUIRED_CASKS = [
   { appDir: '/Applications/Ghostty.app', cask: 'ghostty' }
 ];
+const TOP_LEVEL_COMMANDS = ['setup', 'config', 'status', 'update', 'session', 'help', 'version'];
 
 function requiredPluginFiles() {
   return [
@@ -48,7 +49,7 @@ function needMacOS() {
 }
 
 function parseArgv(argv) {
-  const flags = { json: false, verbose: false, yes: false, repair: false, passthroughArgs: [], doubleDashArgs: [] };
+  const flags = { json: false, verbose: false, yes: false, repair: false, unknownFlags: [], doubleDashArgs: [] };
   const positional = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -57,8 +58,8 @@ function parseArgv(argv) {
       flags.doubleDashArgs = argv.slice(i + 1);
       break;
     }
-    if (arg === '--help' || arg === '-h') flags.help = true;
-    else if (arg === '--version' || arg === '-v' || arg === '--v') flags.version = true;
+    if (arg === '--help' || arg === '-h' || arg === '-help') flags.help = true;
+    else if (arg === '--version' || arg === '-v' || arg === '--v' || arg === '-version') flags.version = true;
     else if (arg === '--json') flags.json = true;
     else if (arg === '--verbose') flags.verbose = true;
     else if (arg === '--yes') flags.yes = true;
@@ -81,7 +82,7 @@ function parseArgv(argv) {
     else if (arg === '--fallback=true') flags.fallback = true;
     else if (arg === '--doctor') flags.doctor = true;
     else if ((positional[0] === 'session') && ['-a', '-k', '-l', '--attach', '--kill', '--list'].includes(arg)) positional.push(arg);
-    else if (arg.startsWith('-')) flags.passthroughArgs.push(arg);
+    else if (arg.startsWith('-')) flags.unknownFlags.push(arg);
     else positional.push(arg);
   }
 
@@ -372,18 +373,8 @@ function reportSetupState(output, checks, { strict = false } = {}) {
 }
 
 function parseRun(positional) {
-  const looksLikePath = (value) => {
-    if (!value) return false;
-    return value.startsWith('/') || value.startsWith('./') || value.startsWith('../') || value === '.' || value === '..' || value.startsWith('~/') || value.includes('/');
-  };
-  const isDir = (value) => {
-    if (!value) return false;
-    try {
-      return fs.existsSync(value) && fs.statSync(value).isDirectory();
-    } catch {
-      return false;
-    }
-  };
+  const looksLikePath = (value) => looksLikePathToken(value);
+  const isDir = (value) => isExistingDirectoryToken(value);
   const isTargetDirToken = (value) => isDir(value) || looksLikePath(value);
 
   const modeIndex = positional.findIndex((item) => MODES.includes(item));
@@ -407,6 +398,31 @@ function parseRun(positional) {
     };
   }
   return { mode: '', targetDir: positional[0] || process.cwd(), agentArgs: positional.slice(1) };
+}
+
+function looksLikePathToken(value) {
+  if (!value) return false;
+  return value.startsWith('/')
+    || value.startsWith('./')
+    || value.startsWith('../')
+    || value === '.'
+    || value === '..'
+    || value.startsWith('~/')
+    || value.includes('/');
+}
+
+function isExistingDirectoryToken(value) {
+  if (!value) return false;
+  try {
+    return fs.existsSync(value) && fs.statSync(value).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function shouldTreatFirstPositionalAsRunTarget(command) {
+  if (!command) return false;
+  return looksLikePathToken(command) || isExistingDirectoryToken(command);
 }
 
 function selectBackend(requested, output) {
@@ -1029,6 +1045,14 @@ function castConfigValue(key, value) {
 
 async function cmdConfig(positional, output) {
   const sub = positional[1] || 'wizard';
+  const knownSubs = new Set(['wizard', 'get', 'set', 'validate', 'explain']);
+  if (!knownSubs.has(sub)) {
+    throw new ZvibeError(
+      ERRORS.RUN_FAILED,
+      `未知 config 子命令: ${sub}`,
+      '可用命令: zvibe config wizard|get|set|validate|explain'
+    );
+  }
   const { config } = loadConfig({ strict: false });
 
   if (sub === 'get') {
@@ -1561,6 +1585,14 @@ async function main() {
   const command = positional[0] || '';
 
   try {
+    if ((flags.unknownFlags || []).length > 0) {
+      throw new ZvibeError(
+        ERRORS.RUN_FAILED,
+        `未知参数: ${flags.unknownFlags[0]}`,
+        '请执行 zvibe --help 查看可用参数'
+      );
+    }
+
     if (flags.help || ['help', '--help', '-h'].includes(command)) {
       process.stdout.write(renderUsage());
       return;
@@ -1576,17 +1608,18 @@ async function main() {
     if (command === 'update') return cmdUpdate(output);
     if (command === 'session') return cmdSession(positional, output);
 
-    if (command && !MODES.includes(command)) {
-      const suggestion = suggestTopCommand(command);
-      if (suggestion) {
+    if (command && !MODES.includes(command) && !TOP_LEVEL_COMMANDS.includes(command)) {
+      if (!shouldTreatFirstPositionalAsRunTarget(command)) {
+        const suggestion = suggestTopCommand(command);
         throw new ZvibeError(
           ERRORS.RUN_FAILED,
           `未知命令: ${command}`,
-          `你是不是想输入: zvibe ${suggestion}${positional[1] ? ` ${positional.slice(1).join(' ')}` : ''}`
+          suggestion
+            ? `你是不是想输入: zvibe ${suggestion}${positional[1] ? ` ${positional.slice(1).join(' ')}` : ''}`
+            : '请执行 zvibe --help 查看可用命令'
         );
       }
     }
-
     return cmdRun(positional, flags, output);
   } catch (error) {
     if (error instanceof ZvibeError) {
@@ -1620,6 +1653,8 @@ module.exports = {
   agentUnsetVars,
   configuredAgentArgs,
   parseArgList,
+  parseArgv,
+  shouldTreatFirstPositionalAsRunTarget,
   getCodexModeToggles,
   applyCodexModeToggles,
   getClaudePermissionToggles,
